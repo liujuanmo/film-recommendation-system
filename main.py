@@ -1,5 +1,4 @@
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import uvicorn
@@ -60,65 +59,10 @@ class RecommendationResponse(BaseModel):
     recommendations: List[MovieRecommendation]
     query_summary: str = Field(description="Summary of the search query")
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/")
 async def root():
-    """Home page with API documentation."""
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Movie Recommendation API</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 40px; }
-            .container { max-width: 800px; }
-            .endpoint { background: #f5f5f5; padding: 15px; margin: 10px 0; border-radius: 5px; }
-            .method { color: #0066cc; font-weight: bold; }
-            code { background: #e8e8e8; padding: 2px 4px; border-radius: 3px; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>🎬 Movie Recommendation API</h1>
-            <p>A movie recommendation system using vector similarity search with PostgreSQL and pgvector.</p>
-            
-            <h2>API Endpoints</h2>
-            
-            <div class="endpoint">
-                <span class="method">GET</span> <code>/</code><br>
-                This documentation page
-            </div>
-            
-            <div class="endpoint">
-                <span class="method">POST</span> <code>/recommend</code><br>
-                Get movie recommendations based on preferences<br>
-                <small>Use the request body to specify genres, directors, year, etc.</small>
-            </div>
-            
-            <div class="endpoint">
-                <span class="method">GET</span> <code>/recommend</code><br>
-                Get movie recommendations using query parameters<br>
-                <small>Example: <code>/recommend?genres=Action,Drama&year=2010&directors=Christopher Nolan</code></small>
-            </div>
-            
-            <div class="endpoint">
-                <span class="method">GET</span> <code>/health</code><br>
-                Health check endpoint
-            </div>
-            
-            <h2>Quick Examples</h2>
-            <ul>
-                <li><a href="/recommend?genres=Action,Drama&year=2010">/recommend?genres=Action,Drama&year=2010</a></li>
-                <li><a href="/recommend?directors=Christopher Nolan">/recommend?directors=Christopher Nolan</a></li>
-                <li><a href="/recommend?overview=space exploration">/recommend?overview=space exploration</a></li>
-            </ul>
-            
-            <h2>Interactive Documentation</h2>
-            <p>Visit <a href="/docs">/docs</a> for interactive Swagger UI documentation.</p>
-            <p>Visit <a href="/redoc">/redoc</a> for ReDoc documentation.</p>
-        </div>
-    </body>
-    </html>
-    """
+    """Root endpoint - redirects to Swagger documentation."""
+    return {"message": "Movie Recommendation API", "documentation": "/docs", "redoc": "/redoc"}
 
 @app.get("/health")
 async def health_check():

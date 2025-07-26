@@ -18,29 +18,35 @@ Environment Variables:
 import argparse
 import sys
 import numpy as np
-import pandas as pd
 from sklearn.preprocessing import MultiLabelBinarizer
 
 from src.postgresql_vec_client import (
-    get_connection, init_embeddings_table, insert_embeddings, 
-    get_movies_with_details, table_exists, get_embedding_count
+    get_engine, init_embeddings_table, insert_embeddings, 
+    get_movies_with_details, table_exists, get_embedding_count,
+    store_transformer_metadata, store_person_embeddings, init_postgresql_tables
 )
 from src.feature_engineering import TextFeatureExtractor
 from src.embedding_utils import build_embedding_dict, get_mean_embedding
 
 EMBED_DIM = 32  # Dimension for director and cast embeddings
 
-def check_prerequisites(conn):
+def check_prerequisites():
     """Check if movie data is loaded in PostgreSQL."""
-    if not table_exists(conn, 'movies'):
+    if not table_exists('movies'):
         print("❌ Error: Movie data not found in PostgreSQL!")
         print("Please run 'python load_data.py' first to load IMDB data.")
         return False
     
-    # Check if we have movies
-    with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM movies WHERE title_type = 'movie' AND array_length(genres, 1) > 0;")
-        movie_count = cur.fetchone()[0]
+    # Check if we have movies - use SQLAlchemy
+    from src.postgresql_vec_client import get_session, Movie
+    session = get_session()
+    try:
+        movie_count = session.query(Movie).filter(
+            Movie.title_type == 'movie',
+            Movie.genres != None
+        ).count()
+    finally:
+        session.close()
     
     if movie_count == 0:
         print("❌ Error: No valid movies found in database!")
@@ -50,19 +56,30 @@ def check_prerequisites(conn):
     print(f"✅ Found {movie_count} movies in database")
     return True
 
-def check_existing_embeddings(conn):
+def check_existing_embeddings():
     """Check if embeddings already exist."""
-    if not table_exists(conn, 'movie_embeddings'):
+    if not table_exists('movie_embeddings'):
         return 0
     
-    count = get_embedding_count(conn)
+    count = get_embedding_count()
     return count
 
-def compute_and_store_embeddings(conn, force=False):
+def ensure_metadata_tables():
+    """Ensure transformer metadata and person embedding tables exist."""
+    print("🔧 Ensuring metadata tables exist...")
+    try:
+        # This will create all tables including the new metadata tables
+        init_postgresql_tables()
+        print("✅ Metadata tables verified/created")
+    except Exception as e:
+        print(f"❌ Error creating metadata tables: {e}")
+        raise
+
+def compute_and_store_embeddings(force=False):
     """Compute movie embeddings and store them in PostgreSQL."""
     
     # Check existing embeddings
-    existing_count = check_existing_embeddings(conn)
+    existing_count = check_existing_embeddings()
     if existing_count > 0 and not force:
         print(f"⚠️  Found {existing_count} existing embeddings in database.")
         response = input("Do you want to recompute embeddings? (y/N): ").strip().lower()
@@ -71,7 +88,7 @@ def compute_and_store_embeddings(conn, force=False):
             return False
     
     print("🔄 Loading movie data from PostgreSQL...")
-    movies_data = get_movies_with_details(conn)
+    movies_data = get_movies_with_details()
     
     if not movies_data:
         print("❌ No movie data found!")
@@ -164,7 +181,7 @@ def compute_and_store_embeddings(conn, force=False):
     
     # 7. Initialize embeddings table
     print("🗄️  Initializing embeddings table...")
-    init_embeddings_table(conn, total_dim)
+    init_embeddings_table(total_dim)
     
     # 8. Store embeddings
     print("💾 Storing embeddings in PostgreSQL...")
@@ -178,10 +195,39 @@ def compute_and_store_embeddings(conn, force=False):
         batch_ids = movie_ids[i:i+batch_size]
         batch_vectors = movie_vectors[i:i+batch_size]
         
-        insert_embeddings(conn, batch_ids, batch_vectors.tolist())
+        insert_embeddings(batch_ids, batch_vectors.tolist())
         
         batch_num = (i // batch_size) + 1
         print(f"   Batch {batch_num}/{total_batches} completed ({len(batch_ids)} embeddings)")
+    
+    # 9. Store transformer metadata for database-first operations
+    print("🗄️  Storing transformer metadata...")
+    
+    # Store genre classes
+    store_transformer_metadata('genre_classes', list(genre_mlb.classes_))
+    print("   ✓ Stored genre classes")
+    
+    # Store year statistics
+    store_transformer_metadata('year_stats', {
+        'min': float(year_min),
+        'max': float(year_max)
+    })
+    print("   ✓ Stored year normalization parameters")
+    
+    # Store TF-IDF metadata
+    tfidf_metadata = {
+        'vocabulary': text_extractor.vectorizer.get_feature_names_out().tolist(),
+        'idf_weights': text_extractor.vectorizer.idf_.tolist()
+    }
+    store_transformer_metadata('tfidf_metadata', tfidf_metadata)
+    print("   ✓ Stored TF-IDF metadata")
+    
+    # Store person embeddings in database
+    store_person_embeddings(director_emb_dict, 'director')
+    print(f"   ✓ Stored {len(director_emb_dict)} director embeddings")
+    
+    store_person_embeddings(cast_emb_dict, 'actor')
+    print(f"   ✓ Stored {len(cast_emb_dict)} actor embeddings")
     
     print("✅ Embedding computation and storage completed!")
     print(f"📊 Total embeddings stored: {len(movie_ids)}")
@@ -202,27 +248,28 @@ def main():
     try:
         # Connect to PostgreSQL
         print("🔌 Connecting to PostgreSQL...")
-        conn = get_connection()
+        engine = get_engine()
         print("✅ Connected to PostgreSQL")
         
         # Check prerequisites
-        if not check_prerequisites(conn):
+        if not check_prerequisites():
             return 1
         
+        # Ensure metadata tables exist
+        ensure_metadata_tables()
+
         # Compute and store embeddings
-        success = compute_and_store_embeddings(conn, force=args.force)
+        success = compute_and_store_embeddings(force=args.force)
         
         if success:
             print("\n🎉 Embeddings loading completed successfully!")
             print("\nNext steps:")
             print("1. Start the FastAPI server: python main.py")
-            print("2. Test the API: python test_api.py")
-            print("3. Visit http://localhost:8000 for the web interface")
+            print("2. Visit http://localhost:8000/docs for the API documentation")
         else:
             print("\n❌ Embeddings loading was cancelled or failed.")
             return 1
         
-        conn.close()
         return 0
         
     except Exception as e:

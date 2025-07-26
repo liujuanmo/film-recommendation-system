@@ -19,9 +19,11 @@ A modern movie recommendation system using vector similarity search with Postgre
 
 ### Prerequisites
 
-- PostgreSQL 12+ with pgvector extension
+- PostgreSQL 12+ with pgvector extension installed
 - Python 3.7+
 - IMDB dataset files
+
+**Note**: The system uses a custom SQLAlchemy Vector type, so you only need the PostgreSQL pgvector extension, not the Python pgvector package.
 
 ### Installation
 
@@ -40,30 +42,32 @@ A modern movie recommendation system using vector similarity search with Postgre
 
 ### Usage
 
-**Step 1: Load movie data into PostgreSQL**
+**Step 1: Install dependencies**
+```bash
+pip install -r requirements.txt
+```
+
+**Step 2: Load movie data into PostgreSQL**
 ```bash
 python load_data.py
 ```
 
-**Step 2: Compute and store embeddings**
+**Step 3: Compute and store embeddings**
 ```bash
 python load_embeddings.py
 ```
 
-**Step 3: Start the FastAPI server**
+**Step 4: Start the FastAPI server**
 ```bash
 python main.py
 ```
 
-**Step 4: Use the API**
-- Web interface: http://localhost:8000
-- Interactive docs: http://localhost:8000/docs
-- API documentation: http://localhost:8000/redoc
+**Step 5: Use the API**
+- Interactive Swagger docs: http://localhost:8000/docs
+- Alternative ReDoc documentation: http://localhost:8000/redoc
+- API root: http://localhost:8000
 
 ## 📡 API Usage Examples
-
-### Web Interface
-Visit http://localhost:8000 for a user-friendly web interface with clickable examples.
 
 ### GET Requests (URL Parameters)
 ```bash
@@ -133,16 +137,17 @@ The system uses a clean three-step architecture:
 - `load_data.py`: Data loading script for PostgreSQL
 - `load_embeddings.py`: Embedding computation and storage
 - `src/recommender.py`: Core recommendation logic
-- `src/postgresql_vec_client.py`: PostgreSQL + pgvector operations
+- `src/postgresql_vec_client.py`: SQLAlchemy models and database operations
 - `src/feature_engineering.py`: Text feature extraction
 - `src/embedding_utils.py`: Embedding utilities
 
 ## 🔧 Technology Stack
 
 - **Database**: PostgreSQL with pgvector extension
+- **ORM**: SQLAlchemy for database operations
 - **Backend**: FastAPI with Pydantic models
 - **ML/AI**: scikit-learn, numpy, pandas
-- **Vector Search**: pgvector (PostgreSQL extension)
+- **Vector Search**: pgvector (PostgreSQL extension) with custom SQLAlchemy types
 - **API Documentation**: Automatic Swagger/OpenAPI docs
 
 ## 📊 How It Works
@@ -156,10 +161,11 @@ The system uses a clean three-step architecture:
 
 ## 🔗 Benefits Over SQLite
 
-- **Performance**: Better handling of large datasets
+- **Performance**: Better handling of large datasets with PostgreSQL
 - **Concurrency**: Multiple users can query simultaneously
-- **Scalability**: Production-ready PostgreSQL infrastructure
-- **Flexibility**: Standard SQL queries + vector operations
+- **Scalability**: Production-ready PostgreSQL infrastructure with SQLAlchemy ORM
+- **Flexibility**: Type-safe database operations with SQLAlchemy models
+- **Maintainability**: Clean ORM-based database interactions
 - **Reliability**: ACID compliance and backup capabilities
 
 ## 🚀 Development Setup
@@ -182,3 +188,28 @@ pip install -r requirements.txt
 # Start development server
 uvicorn main:app --reload
 ```
+
+## 🔧 Troubleshooting
+
+### SQLAlchemy Import Error
+If you see `ImportError: cannot import name 'VECTOR'`, this is expected. The system uses a custom Vector type that works with the PostgreSQL pgvector extension without requiring additional Python packages.
+
+### Vector Search SQL Syntax
+The system uses raw psycopg2 connections for vector similarity queries to avoid SQLAlchemy parameter binding issues with PostgreSQL's `::vector` casting syntax.
+
+### Missing Dependencies
+Make sure to install all requirements:
+```bash
+pip install -r requirements.txt
+```
+
+### PostgreSQL Connection Issues
+1. Ensure PostgreSQL is running
+2. Verify the pgvector extension is installed: `CREATE EXTENSION vector;`
+3. Check database connection settings via environment variables
+
+### Vector Search Errors
+If you see SQL syntax errors related to vector operations, ensure:
+1. The pgvector extension is properly installed in PostgreSQL
+2. Your PostgreSQL version supports pgvector (12+)
+3. The vector data format is correct (arrays converted to strings)

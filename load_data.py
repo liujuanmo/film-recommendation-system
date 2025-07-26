@@ -15,7 +15,7 @@ Environment Variables:
 import os
 import pandas as pd
 from src.postgresql_vec_client import (
-    get_connection, init_postgresql_tables, 
+    get_engine, init_postgresql_tables, 
     load_movies_data, load_directors_data, load_actors_data,
     load_movie_directors, load_movie_actors,
     table_exists, get_movie_count
@@ -26,20 +26,19 @@ DATA_DIR = 'imdb_data'
 def load_imdb_data():
     """Load all IMDB data into PostgreSQL."""
     print("Connecting to PostgreSQL...")
-    conn = get_connection()
+    engine = get_engine()
     
     print("Initializing database tables...")
-    init_postgresql_tables(conn)
+    init_postgresql_tables()
     
     # Check if data is already loaded
-    if table_exists(conn, 'movies'):
-        movie_count = get_movie_count(conn)
+    if table_exists('movies'):
+        movie_count = get_movie_count()
         if movie_count > 0:
             print(f"Found {movie_count} movies already loaded in database.")
             response = input("Do you want to reload all data? (y/N): ").strip().lower()
             if response != 'y':
                 print("Skipping data load. Use existing data.")
-                conn.close()
                 return
     
     print("Loading IMDB data files...")
@@ -101,7 +100,7 @@ def load_imdb_data():
     
     # Load movies
     print("  → Inserting movies...")
-    load_movies_data(conn, movies)
+    load_movies_data(movies)
     
     # Process and load directors
     if not crew.empty and not names.empty:
@@ -118,7 +117,7 @@ def load_imdb_data():
         director_names = names[names['nconst'].isin(director_nconsts)].copy()
         if not director_names.empty:
             print(f"  → Inserting {len(director_names)} directors...")
-            load_directors_data(conn, director_names)
+            load_directors_data(director_names)
             
             # Create movie-director relationships
             print("  → Creating movie-director relationships...")
@@ -131,7 +130,7 @@ def load_imdb_data():
                             movie_directors_data.append((row['tconst'], director_nconst.strip()))
             
             if movie_directors_data:
-                load_movie_directors(conn, movie_directors_data)
+                load_movie_directors(movie_directors_data)
     
     # Process and load actors
     if not principals.empty and not names.empty:
@@ -147,7 +146,7 @@ def load_imdb_data():
         actor_names = names[names['nconst'].isin(actor_nconsts)].copy()
         if not actor_names.empty:
             print(f"  → Inserting {len(actor_names)} actors...")
-            load_actors_data(conn, actor_names)
+            load_actors_data(actor_names)
             
             # Create movie-actor relationships (limit to top 5 per movie)
             print("  → Creating movie-actor relationships...")
@@ -162,16 +161,15 @@ def load_imdb_data():
                         movie_actors_data.append((row['tconst'], actor_nconst))
             
             if movie_actors_data:
-                load_movie_actors(conn, movie_actors_data)
+                load_movie_actors(movie_actors_data)
     
     print("\nData loading completed!")
     
     # Show summary
-    final_count = get_movie_count(conn)
+    final_count = get_movie_count()
     print(f"Total movies loaded: {final_count}")
     
-    conn.close()
-    print("Database connection closed.")
+    print("Database operations completed.")
     print("\nNext step: Run 'python main.py' to start the recommendation system.")
 
 if __name__ == '__main__':
