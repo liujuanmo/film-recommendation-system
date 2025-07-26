@@ -84,19 +84,6 @@ curl "http://localhost:8000/recommend?overview=space%20exploration"
 curl "http://localhost:8000/recommend?genres=Action,Thriller&year=2010&directors=Christopher%20Nolan"
 ```
 
-### POST Requests (JSON Body)
-```bash
-curl -X POST "http://localhost:8000/recommend" \
-     -H "Content-Type: application/json" \
-     -d '{
-       "genres": ["Action", "Sci-Fi"],
-       "year": "2010", 
-       "directors": ["Christopher Nolan"],
-       "overview": "A mind-bending thriller about dreams",
-       "top_n": 5
-     }'
-```
-
 ### Response Format
 ```json
 {
@@ -146,7 +133,7 @@ The system uses a clean three-step architecture:
 - **Database**: PostgreSQL with pgvector extension
 - **ORM**: SQLAlchemy for database operations
 - **Backend**: FastAPI with Pydantic models
-- **ML/AI**: scikit-learn, numpy, pandas
+- **ML/AI**: scikit-learn, numpy
 - **Vector Search**: pgvector (PostgreSQL extension) with custom SQLAlchemy types
 - **API Documentation**: Automatic Swagger/OpenAPI docs
 
