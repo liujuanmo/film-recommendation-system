@@ -4,7 +4,7 @@ import os
 import numpy as np
 from sklearn.preprocessing import MultiLabelBinarizer
 
-from src.db_client import (
+from src.db_functions import (
     get_engine,
     init_embeddings_table,
     insert_embeddings,
@@ -17,6 +17,9 @@ from src.db_client import (
     store_person_embeddings,
     init_postgresql_tables,
     init_person_embeddings_table,
+    stream_movie_features,
+    get_year_min_max,
+    get_all_unique_genres,
 )
 from src.feature_engineering import (
     TextFeatureExtractor,
@@ -24,34 +27,6 @@ from src.feature_engineering import (
     get_mean_embedding,
 )
 from src.constants import DEFAULT_MODEL
-
-
-def ensure_metadata_tables():
-    """Ensure transformer metadata and person embedding tables exist."""
-    print("🔧 Ensuring metadata tables exist...")
-    try:
-        # This will create all tables including the new metadata tables
-        init_postgresql_tables()
-        print("✅ Metadata tables verified/created")
-
-        # Ensure person embeddings table has correct dimensions for sentence transformers
-        init_person_embeddings_table()
-
-    except Exception as e:
-        print(f"❌ Error creating metadata tables: {e}")
-        raise
-
-
-def extract_movie_features(movies_data):
-    """Extract and prepare movie features for embedding computation."""
-    print("  → Extracting features...")
-
-    genres_list = [movie["genres"] for movie in movies_data]
-    directors_list = [movie["directors"] for movie in movies_data]
-    cast_list = [movie["cast"] for movie in movies_data]
-    years_list = [movie["start_year"] for movie in movies_data]
-
-    return genres_list, directors_list, cast_list, years_list
 
 
 def compute_genre_features(genres_list):
@@ -231,42 +206,77 @@ def store_transformer_metadata_and_person_embeddings(
     print(f"   ✓ Stored {len(cast_emb_dict)} actor embeddings")
 
 
-def compute_and_store_embeddings():
-    """Main function to compute and store movie embeddings."""
-    print("🔄 Loading movie data from PostgreSQL...")
-    movies_data = get_movies_with_details()
+def compute_and_store_embeddings(batch_size=1000):
+    """Main function to compute and store movie embeddings in batches, optimized."""
+    print("🔄 Streaming movie data from PostgreSQL in batches...")
+    batch_num = 0
+    total_embeddings = 0
+    director_emb_dict = {}
+    cast_emb_dict = {}
 
-    if not movies_data:
-        print("❌ No movie data found!")
-        return False
+    # Get normalization and one-hot info in advance
+    print("🔍 Querying year min/max and all unique genres...")
+    year_min, year_max = get_year_min_max()
+    all_genres = get_all_unique_genres()
+    genre_mlb = MultiLabelBinarizer(classes=all_genres)
+    genre_mlb.fit([])  # fit with empty to set classes
 
-    print(f"📊 Processing {len(movies_data)} movies for embedding computation...")
+    text_extractor = TextFeatureExtractor()
 
-    # Extract features
-    genres_list, directors_list, cast_list, years_list = extract_movie_features(
-        movies_data
-    )
+    for batch in stream_movie_features(batch_size):
+        batch_num += 1
+        genres_list = [row["genres"] for row in batch]
+        directors_list = [row["directors"] for row in batch]
+        cast_list = [row["cast"] for row in batch]
+        years_list = [row["start_year"] for row in batch]
 
-    # Compute individual feature types
-    genre_features, genre_mlb = compute_genre_features(genres_list)
-    year_features, year_min, year_max = compute_year_features(years_list)
-    text_features = compute_text_features(movies_data)
-    director_embs, cast_embs, director_emb_dict, cast_emb_dict = (
-        compute_person_embeddings(directors_list, cast_list)
-    )
+        # One-hot encode genres using precomputed classes
+        genre_batch_features = genre_mlb.transform(genres_list)
+        # Normalize years using precomputed min/max
+        years_array = np.array([y if y is not None else 0 for y in years_list])
+        if year_max > year_min:
+            year_norm = (years_array - year_min) / (year_max - year_min)
+        else:
+            year_norm = np.zeros(len(years_array))
+        year_batch_features = year_norm.reshape(-1, 1)
 
-    # Combine all features
-    movie_vectors, total_dim = combine_features(
-        genre_features, year_features, director_embs, cast_embs, text_features
-    )
+        # Batch text features (using title as text)
+        text_corpus = [row.get("primary_title", "") for row in batch]
+        text_features = text_extractor.fit_transform(text_corpus)
 
-    # Initialize embeddings table
-    print("🗄️  Initializing embeddings table...")
-    init_embeddings_table(total_dim)
+        # Person embeddings: only compute for new names
+        new_directors = set(n for directors in directors_list for n in directors) - set(
+            director_emb_dict
+        )
+        if new_directors:
+            director_emb_dict.update(build_embedding_dict(new_directors))
+        new_cast = set(n for cast in cast_list for n in cast) - set(cast_emb_dict)
+        if new_cast:
+            cast_emb_dict.update(build_embedding_dict(new_cast))
+        director_embs = np.array(
+            [get_mean_embedding(d, director_emb_dict) for d in directors_list]
+        )
+        cast_embs = np.array([get_mean_embedding(c, cast_emb_dict) for c in cast_list])
 
-    # Store embeddings
-    movie_ids = [movie["id"] for movie in movies_data]
-    store_embeddings_in_batches(movie_ids, movie_vectors)
+        # Combine features
+        movie_vectors, total_dim = combine_features(
+            genre_batch_features,
+            year_batch_features,
+            director_embs,
+            cast_embs,
+            text_features,
+        )
+
+        # Initialize embeddings table if first batch
+        if batch_num == 1:
+            print("🗄️  Initializing embeddings table...")
+            init_embeddings_table(total_dim)
+
+        # Store embeddings
+        movie_ids = [row.get("id") for row in batch]
+        store_embeddings_in_batches(movie_ids, movie_vectors)
+        total_embeddings += len(movie_ids)
+        print(f"   Batch {batch_num} completed ({len(movie_ids)} embeddings)")
 
     # Store metadata and person embeddings
     store_transformer_metadata_and_person_embeddings(
@@ -280,16 +290,15 @@ def compute_and_store_embeddings():
     )
 
     print("✅ Embedding computation and storage completed!")
-    print(f"📊 Total embeddings stored: {len(movie_ids)}")
+    print(f"📊 Total embeddings stored: {total_embeddings}")
     print(f"🎯 Embedding dimension: {total_dim}")
-
     return True
 
 
 def main():
     print("Loading movie embeddings...")
 
-    ensure_metadata_tables()
+    init_embeddings_table()
     compute_and_store_embeddings()
 
     print("✅ Embedding loading completed!")

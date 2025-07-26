@@ -1,13 +1,13 @@
 import os
 import pandas as pd
-from src.db_client import (
+from src.db_functions import (
     enable_pgvector_and_create_tables,
     get_movie_count,
-    insert_movies,
-    insert_directors,
-    insert_actors,
-    insert_movie_directors,
-    insert_movie_actors,
+    bulk_insert_movies,
+    bulk_insert_directors,
+    bulk_insert_actors,
+    bulk_insert_movie_directors,
+    bulk_insert_movie_actors,
 )
 from src.constants import DATA_DIR
 
@@ -76,7 +76,7 @@ def load_directors(crew, names):
 
     director_names = names[names["nconst"].isin(director_nconsts)].copy()
     if not director_names.empty:
-        insert_directors(director_names)
+        bulk_insert_directors(director_names)
         movie_directors_data = []
         for _, row in crew.iterrows():
             if pd.notna(row["directors"]) and row["directors"]:
@@ -88,7 +88,7 @@ def load_directors(crew, names):
                         )
 
         if movie_directors_data:
-            insert_movie_directors(movie_directors_data)
+            bulk_insert_movie_directors(movie_directors_data)
 
 
 def load_actors(principals, names):
@@ -101,7 +101,7 @@ def load_actors(principals, names):
     actor_names = names[names["nconst"].isin(actor_nconsts)].copy()
 
     if not actor_names.empty:
-        insert_actors(actor_names)
+        bulk_insert_actors(actor_names)
         movie_actors_data = []
         actors_grouped = (
             actors_principals.groupby("tconst")["nconst"]
@@ -114,7 +114,7 @@ def load_actors(principals, names):
                     movie_actors_data.append((row["tconst"], actor_nconst))
 
         if movie_actors_data:
-            insert_movie_actors(movie_actors_data)
+            bulk_insert_movie_actors(movie_actors_data)
 
 
 def main_load_imdb_data():
@@ -123,7 +123,7 @@ def main_load_imdb_data():
 
     print("  → Processing movies...")
     movies = load_titles()
-    insert_movies(movies)
+    bulk_insert_movies(movies)
     print("  → Processed movies.")
 
     print("  → Processing names...")

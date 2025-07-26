@@ -1,229 +1,39 @@
 from sqlalchemy import (
-    create_engine,
-    Column,
-    Integer,
-    String,
-    Text,
-    ARRAY,
-    ForeignKey,
-    Index,
     func,
-    DateTime,
-    JSON,
+    text,
 )
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
-from sqlalchemy.sql import text
-from sqlalchemy.types import UserDefinedType
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 import numpy as np
 import pandas as pd
 import os
 from typing import List, Tuple, Optional, Dict, Any
 import json
 from .constants import DEFAULT_MODEL_DIMENSION
-
-# Database connection parameters - can be configured via environment variables
-DB_HOST = os.getenv("DB_HOST", "localhost")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "movie_recommendations")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "12345678")
-
-# Create database URL
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-
-
-# Create custom Vector type for pgvector
-class Vector(UserDefinedType):
-    """Custom SQLAlchemy type for pgvector."""
-
-    def __init__(self, dim=None):
-        self.dim = dim
-
-    def get_col_spec(self):
-        if self.dim is None:
-            return "VECTOR"
-        return f"VECTOR({self.dim})"
-
-    def bind_processor(self, dialect):
-        def process(value):
-            if value is None:
-                return value
-            if isinstance(value, list):
-                return str(value)
-            elif hasattr(value, "tolist"):
-                return str(value.tolist())
-            return str(value)
-
-        return process
-
-    def result_processor(self, dialect, coltype):
-        def process(value):
-            if value is None:
-                return value
-            # pgvector returns vectors as strings like '[1,2,3]'
-            if isinstance(value, str):
-                # Remove brackets and split by comma
-                value = value.strip("[]")
-                return [float(x) for x in value.split(",")]
-            return value
-
-        return process
-
-
-# Create SQLAlchemy engine
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-
-# SQLAlchemy Models
-class Movie(Base):
-    __tablename__ = "movies"
-
-    id = Column(Integer, primary_key=True, index=True)
-    tconst = Column(String(20), unique=True, nullable=False, index=True)
-    primary_title = Column(Text, nullable=False)
-    start_year = Column(Integer, index=True)
-    genres = Column(ARRAY(String), index=True)
-    title_type = Column(String(50))
-    overview = Column(Text)
-
-    # Relationships
-    directors = relationship("MovieDirector", back_populates="movie")
-    actors = relationship("MovieActor", back_populates="movie")
-    embedding = relationship("MovieEmbedding", back_populates="movie", uselist=False)
-
-
-class Director(Base):
-    __tablename__ = "directors"
-
-    id = Column(Integer, primary_key=True, index=True)
-    nconst = Column(String(20), unique=True, nullable=False, index=True)
-    primary_name = Column(Text, nullable=False)
-
-    # Relationships
-    movies = relationship("MovieDirector", back_populates="director")
-
-
-class Actor(Base):
-    __tablename__ = "actors"
-
-    id = Column(Integer, primary_key=True, index=True)
-    nconst = Column(String(20), unique=True, nullable=False, index=True)
-    primary_name = Column(Text, nullable=False)
-
-    # Relationships
-    movies = relationship("MovieActor", back_populates="actor")
-
-
-class MovieDirector(Base):
-    __tablename__ = "movie_directors"
-
-    movie_id = Column(
-        Integer, ForeignKey("movies.id", ondelete="CASCADE"), primary_key=True
-    )
-    director_id = Column(
-        Integer, ForeignKey("directors.id", ondelete="CASCADE"), primary_key=True
-    )
-
-    # Relationships
-    movie = relationship("Movie", back_populates="directors")
-    director = relationship("Director", back_populates="movies")
-
-
-class MovieActor(Base):
-    __tablename__ = "movie_actors"
-
-    movie_id = Column(
-        Integer, ForeignKey("movies.id", ondelete="CASCADE"), primary_key=True
-    )
-    actor_id = Column(
-        Integer, ForeignKey("actors.id", ondelete="CASCADE"), primary_key=True
-    )
-
-    # Relationships
-    movie = relationship("Movie", back_populates="actors")
-    actor = relationship("Actor", back_populates="movies")
-
-
-class MovieEmbedding(Base):
-    __tablename__ = "movie_embeddings"
-
-    movie_id = Column(
-        Integer, ForeignKey("movies.id", ondelete="CASCADE"), primary_key=True
-    )
-    embedding = Column(Vector(None))  # Dynamic dimension
-
-    # Relationships
-    movie = relationship("Movie", back_populates="embedding")
-
-
-class TransformerMetadata(Base):
-    """Store transformer metadata to avoid loading all data into memory."""
-
-    __tablename__ = "transformer_metadata"
-
-    id = Column(Integer, primary_key=True)
-    metadata_type = Column(
-        String(50), nullable=False, unique=True
-    )  # 'genre_classes', 'year_stats', 'tfidf_vocab', etc.
-    data = Column(JSON, nullable=False)  # Store the actual metadata as JSON
-    created_at = Column(DateTime, default=func.now())
-    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
-
-
-class PersonEmbedding(Base):
-    """Store embeddings for directors and actors."""
-
-    __tablename__ = "person_embeddings"
-
-    id = Column(Integer, primary_key=True)
-    person_name = Column(String(255), nullable=False, index=True)
-    person_type = Column(String(20), nullable=False)  # 'director' or 'actor'
-    embedding = Column(
-        Vector(DEFAULT_MODEL_DIMENSION)
-    )  # 384-dim for sentence transformers (all-MiniLM-L6-v2)
-
-    __table_args__ = (
-        Index("idx_person_name_type", "person_name", "person_type", unique=True),
-    )
-
-
-# Add indexes
-Index(
-    "idx_movie_embeddings_embedding",
-    MovieEmbedding.embedding,
-    postgresql_using="ivfflat",
-    postgresql_ops={"embedding": "vector_cosine_ops"},
+from .db_models import (
+    Base,
+    Movie,
+    Director,
+    Actor,
+    MovieDirector,
+    MovieActor,
+    MovieEmbedding,
+    TransformerMetadata,
+    PersonEmbedding,
+    Vector,
 )
-
-
-def get_engine():
-    """Get SQLAlchemy engine."""
-    return engine
-
-
-def get_session():
-    """Get SQLAlchemy session."""
-    return SessionLocal()
-
-
-def get_connection():
-    """Get raw connection for compatibility."""
-    return engine.raw_connection()
+from .db_connect import get_engine, get_session, get_connection
 
 
 def enable_pgvector_and_create_tables():
-    with engine.connect() as conn:
+    with get_connection() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
         conn.commit()
 
-    Base.metadata.create_all(bind=engine)
+    Base.metadata.create_all(bind=get_engine())
 
 
 def init_embeddings_table(emb_dim: int):
-    with engine.connect() as conn:
+    with get_connection() as conn:
         conn.execute(text("DROP TABLE IF EXISTS movie_embeddings CASCADE;"))
 
         conn.execute(
@@ -247,60 +57,42 @@ def init_embeddings_table(emb_dim: int):
             )
         )
 
-        conn.commit()
+        conn.execute(text("DROP TABLE IF EXISTS person_embeddings CASCADE;"))
 
-    print(f"✅ Embeddings table initialized with dimension {emb_dim}")
-
-
-def init_person_embeddings_table():
-    """Initialize the person embeddings table with correct dimensions for sentence transformers."""
-    try:
-        # Drop existing table to recreate with correct dimensions
-        with engine.connect() as conn:
-            conn.execute(text("DROP TABLE IF EXISTS person_embeddings CASCADE;"))
-
-            # Create the person_embeddings table with correct dimensions for sentence transformers
-            conn.execute(
-                text(
-                    f"""
-                CREATE TABLE person_embeddings (
-                    id SERIAL PRIMARY KEY,
-                    person_name VARCHAR(255) NOT NULL,
-                    person_type VARCHAR(20) NOT NULL,
-                    embedding VECTOR({DEFAULT_MODEL_DIMENSION})
-                );
-            """
-                )
+        # Create the person_embeddings table with correct dimensions for sentence transformers
+        conn.execute(
+            text(
+                f"""
+            CREATE TABLE person_embeddings (
+                id SERIAL PRIMARY KEY,
+                person_name VARCHAR(255) NOT NULL,
+                person_type VARCHAR(20) NOT NULL,
+                embedding VECTOR({DEFAULT_MODEL_DIMENSION})
+            );
+        """
             )
-
-            # Create indexes
-            conn.execute(
-                text(
-                    """
-                CREATE INDEX IF NOT EXISTS idx_person_name_type 
-                ON person_embeddings (person_name, person_type);
-            """
-                )
-            )
-
-            conn.execute(
-                text(
-                    """
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_person_name_type_unique 
-                ON person_embeddings (person_name, person_type);
-            """
-                )
-            )
-
-            conn.commit()
-
-        print(
-            f"✅ Person embeddings table initialized with {DEFAULT_MODEL_DIMENSION} dimensions"
         )
 
-    except Exception as e:
-        print(f"❌ Error initializing person embeddings table: {e}")
-        raise
+        # Create indexes
+        conn.execute(
+            text(
+                """
+            CREATE INDEX IF NOT EXISTS idx_person_name_type 
+            ON person_embeddings (person_name, person_type);
+        """
+            )
+        )
+
+        conn.execute(
+            text(
+                """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_person_name_type_unique 
+            ON person_embeddings (person_name, person_type);
+        """
+            )
+        )
+
+        conn.commit()
 
 
 def insert_embeddings(ids: List[int], embeddings: List):
@@ -347,7 +139,7 @@ def search(query_vec, top_n: int = 10) -> List[Tuple[int, float]]:
         query_vec = query_vec.tolist()
 
     # Get raw connection for direct SQL execution
-    connection = engine.raw_connection()
+    connection = get_connection()
     try:
         with connection.cursor() as cursor:
             # Convert query vector to string format for pgvector
@@ -530,7 +322,6 @@ def insert_movies(movies_df):
                     int(row["startYear"]) if pd.notna(row["startYear"]) else None
                 )
                 existing.genres = genres
-                existing.title_type = row.get("titleType", "movie")
                 existing.overview = row.get("overview", "")
             else:
                 # Create new movie
@@ -541,7 +332,6 @@ def insert_movies(movies_df):
                         int(row["startYear"]) if pd.notna(row["startYear"]) else None
                     ),
                     genres=genres,
-                    title_type=row.get("titleType", "movie"),
                     overview=row.get("overview", ""),
                 )
                 session.add(movie)
@@ -668,19 +458,14 @@ def get_movies_with_details() -> List[Dict[str, Any]]:
     session = get_session()
     try:
         # Use SQLAlchemy to get movies with details
-        query = (
-            session.query(
-                Movie.id,
-                Movie.tconst,
-                Movie.primary_title,
-                Movie.start_year,
-                Movie.genres,
-                Movie.title_type,
-                Movie.overview,
-            )
-            .filter(Movie.title_type == "movie")
-            .filter(Movie.genres != None)
-        )
+        query = session.query(
+            Movie.id,
+            Movie.tconst,
+            Movie.primary_title,
+            Movie.start_year,
+            Movie.genres,
+            Movie.overview,
+        ).filter(Movie.genres != None)
 
         movies = query.all()
         result = []
@@ -709,7 +494,6 @@ def get_movies_with_details() -> List[Dict[str, Any]]:
                     "primary_title": movie.primary_title,
                     "start_year": movie.start_year,
                     "genres": movie.genres or [],
-                    "title_type": movie.title_type,
                     "overview": movie.overview,
                     "directors": [d[0] for d in directors],
                     "cast": [a[0] for a in actors],
@@ -744,7 +528,6 @@ def get_movie_details_by_ids(movie_ids: List[int]) -> List[dict]:
                     "primary_title": movie.primary_title,
                     "start_year": movie.start_year,
                     "genres": movie.genres or [],
-                    "title_type": movie.title_type,
                     "overview": movie.overview,
                     "directors": directors,
                     "cast": actors,
@@ -752,5 +535,268 @@ def get_movie_details_by_ids(movie_ids: List[int]) -> List[dict]:
             )
 
         return result
+    finally:
+        session.close()
+
+
+def stream_movie_features(batch_size=1000):
+    """Yield batches of movie features (genres, directors, cast, years) for embedding computation."""
+    session = get_session()
+    try:
+        total = session.query(Movie).filter(Movie.genres != None).count()
+        for offset in range(0, total, batch_size):
+            # Get movies with directors and actors in a single query using joins
+            movies_with_details = (
+                session.query(
+                    Movie.id,
+                    Movie.genres,
+                    Movie.start_year,
+                    Director.primary_name.label("director_name"),
+                    Actor.primary_name.label("actor_name"),
+                )
+                .outerjoin(MovieDirector, Movie.id == MovieDirector.movie_id)
+                .outerjoin(Director, MovieDirector.director_id == Director.id)
+                .outerjoin(MovieActor, Movie.id == MovieActor.movie_id)
+                .outerjoin(Actor, MovieActor.actor_id == Actor.id)
+                .filter(Movie.genres != None)
+                .order_by(Movie.id)
+                .offset(offset)
+                .limit(
+                    batch_size * 10
+                )  # Multiply by 10 to account for multiple directors/actors per movie
+                .all()
+            )
+
+            # Group by movie
+            movie_dict = {}
+            for row in movies_with_details:
+                movie_id = row.id
+                if movie_id not in movie_dict:
+                    movie_dict[movie_id] = {
+                        "genres": row.genres or [],
+                        "directors": set(),
+                        "cast": set(),
+                        "start_year": row.start_year,
+                    }
+
+                if row.director_name:
+                    movie_dict[movie_id]["directors"].add(row.director_name)
+                if row.actor_name:
+                    movie_dict[movie_id]["cast"].add(row.actor_name)
+
+            # Convert sets to lists and create batch
+            batch = []
+            for movie_data in movie_dict.values():
+                batch.append(
+                    {
+                        "genres": movie_data["genres"],
+                        "directors": list(movie_data["directors"]),
+                        "cast": list(movie_data["cast"]),
+                        "start_year": movie_data["start_year"],
+                    }
+                )
+
+            if batch:
+                yield batch
+    finally:
+        session.close()
+
+
+def get_year_min_max():
+    session = get_session()
+    try:
+        min_year = session.query(func.min(Movie.start_year)).scalar()
+        max_year = session.query(func.max(Movie.start_year)).scalar()
+        return min_year, max_year
+    finally:
+        session.close()
+
+
+def get_all_unique_genres():
+    session = get_session()
+    try:
+        genres = session.query(Movie.genres).all()
+        genre_set = set()
+        for row in genres:
+            if row[0]:
+                genre_set.update(row[0])
+        return sorted(g for g in genre_set if g)
+    finally:
+        session.close()
+
+
+def bulk_insert_movies(movies_df):
+    """Bulk insert movies data into the database, ignoring duplicates by tconst."""
+    session = get_session()
+    try:
+        # Prepare data for insert
+        values = []
+        for _, row in movies_df.iterrows():
+            genres = row.get("genres", [])
+            if isinstance(genres, str):
+                genres = genres.split(",") if genres else []
+            values.append(
+                {
+                    "tconst": row["tconst"],
+                    "primary_title": row["primaryTitle"],
+                    "start_year": row.get("startYear"),
+                    "genres": genres,
+                    "overview": row.get("overview", row["primaryTitle"]),
+                }
+            )
+        if not values:
+            return
+        insert_stmt = (
+            pg_insert(Movie.__table__)
+            .values(values)
+            .on_conflict_do_nothing(index_elements=["tconst"])
+        )
+        session.execute(insert_stmt)
+        session.commit()
+        print(f"✅ Bulk inserted {len(values)} movies (duplicates ignored)")
+    except Exception as e:
+        session.rollback()
+        print(f"❌ Error bulk inserting movies: {e}")
+        raise
+    finally:
+        session.close()
+
+
+def bulk_insert_directors(directors_df):
+    """Bulk insert directors data into the database, ignoring duplicates by nconst."""
+    session = get_session()
+    try:
+        values = []
+        for _, row in directors_df.iterrows():
+            values.append(
+                {
+                    "nconst": row["nconst"],
+                    "primary_name": row["primaryName"],
+                }
+            )
+
+        if not values:
+            return
+        insert_stmt = (
+            pg_insert(Director.__table__)
+            .values(values)
+            .on_conflict_do_nothing(index_elements=["nconst"])
+        )
+        session.execute(insert_stmt)
+        session.commit()
+        print(f"✅ Bulk inserted {len(values)} directors (duplicates ignored)")
+    except Exception as e:
+        session.rollback()
+        print(f"❌ Error bulk inserting directors: {e}")
+        raise
+    finally:
+        session.close()
+
+
+def bulk_insert_actors(actors_df):
+    """Bulk insert actors data into the database, ignoring duplicates by nconst."""
+    session = get_session()
+    try:
+        values = []
+        for _, row in actors_df.iterrows():
+            values.append(
+                {
+                    "nconst": row["nconst"],
+                    "primary_name": row["primaryName"],
+                }
+            )
+        if not values:
+            return
+        insert_stmt = (
+            pg_insert(Actor.__table__)
+            .values(values)
+            .on_conflict_do_nothing(index_elements=["nconst"])
+        )
+        session.execute(insert_stmt)
+        session.commit()
+        print(f"✅ Bulk inserted {len(values)} actors (duplicates ignored)")
+    except Exception as e:
+        session.rollback()
+        print(f"❌ Error bulk inserting actors: {e}")
+        raise
+    finally:
+        session.close()
+
+
+def bulk_insert_movie_directors(movie_directors_data):
+    """Bulk insert movie-director relationships, ignoring duplicates."""
+    session = get_session()
+    try:
+        # Get movie and director IDs
+        movies = session.query(Movie.tconst, Movie.id).all()
+        movie_ids = {m.tconst: m.id for m in movies}
+        directors = session.query(Director.nconst, Director.id).all()
+        director_ids = {d.nconst: d.id for d in directors}
+        values = []
+        for tconst, director_nconst in movie_directors_data:
+            movie_id = movie_ids.get(tconst)
+            director_id = director_ids.get(director_nconst)
+            if movie_id and director_id:
+                values.append(
+                    {
+                        "movie_id": movie_id,
+                        "director_id": director_id,
+                    }
+                )
+        if not values:
+            return
+        insert_stmt = (
+            pg_insert(MovieDirector.__table__)
+            .values(values)
+            .on_conflict_do_nothing(index_elements=["movie_id", "director_id"])
+        )
+        session.execute(insert_stmt)
+        session.commit()
+        print(
+            f"✅ Bulk inserted {len(values)} movie-director relationships (duplicates ignored)"
+        )
+    except Exception as e:
+        session.rollback()
+        print(f"❌ Error bulk inserting movie-director relationships: {e}")
+        raise
+    finally:
+        session.close()
+
+
+def bulk_insert_movie_actors(movie_actors_data):
+    """Bulk insert movie-actor relationships, ignoring duplicates."""
+    session = get_session()
+    try:
+        movies = session.query(Movie.tconst, Movie.id).all()
+        movie_ids = {m.tconst: m.id for m in movies}
+        actors = session.query(Actor.nconst, Actor.id).all()
+        actor_ids = {a.nconst: a.id for a in actors}
+        values = []
+        for tconst, actor_nconst in movie_actors_data:
+            movie_id = movie_ids.get(tconst)
+            actor_id = actor_ids.get(actor_nconst)
+            if movie_id and actor_id:
+                values.append(
+                    {
+                        "movie_id": movie_id,
+                        "actor_id": actor_id,
+                    }
+                )
+        if not values:
+            return
+        insert_stmt = (
+            pg_insert(MovieActor.__table__)
+            .values(values)
+            .on_conflict_do_nothing(index_elements=["movie_id", "actor_id"])
+        )
+        session.execute(insert_stmt)
+        session.commit()
+        print(
+            f"✅ Bulk inserted {len(values)} movie-actor relationships (duplicates ignored)"
+        )
+    except Exception as e:
+        session.rollback()
+        print(f"❌ Error bulk inserting movie-actor relationships: {e}")
+        raise
     finally:
         session.close()
