@@ -7,3 +7,4 @@ uvicorn[standard]
 pydantic
 requests
 sentence-transformers
+black

@@ -19,16 +19,15 @@ class TextFeatureExtractor:
         return get_text_model().get_sentence_embedding_dimension()
 
 
-def build_embedding_dict(all_items, model_name=DEFAULT_MODEL):
+def build_embedding_dict(all_items):
     """
     Build semantic embeddings for a list of items (directors, actors, etc.)
     
     Args:
         all_items: List of items to embed
-        model_name: Model name for sentence transformer
     """
-    print(f"🔄 Computing semantic embeddings for {len(all_items)} items using {model_name}...")
-    model = get_text_model(model_name)
+    print(f"🔄 Computing semantic embeddings for {len(all_items)} items ...")
+    model = get_text_model()
     
     # Convert items to embedding texts
     texts = [str(item) for item in all_items]
