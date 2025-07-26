@@ -4,8 +4,11 @@ import numpy as np
 from sklearn.preprocessing import MultiLabelBinarizer
 from .feature_engineering import TextFeatureExtractor
 from .embedding_utils import build_embedding_dict, get_mean_embedding
-from .sqlite_vec_client import get_con, init_sqlite_vec, insert_embeddings, search as sqlite_vec_search
-import sqlite3
+from .postgresql_vec_client import (
+    get_connection, init_embeddings_table, insert_embeddings, 
+    search as postgresql_vec_search, get_embedding_count, table_exists,
+    get_movies_with_details, get_movie_count
+)
 import json
 import pickle
 
@@ -26,24 +29,45 @@ class MovieRecommender:
         self.director_emb_dict = None
         self.cast_emb_dict = None
         self.movie_vectors = None
-        self.sqlite_con = None
+        self.pg_con = None
+        
+        # Establish PostgreSQL connection first
+        try:
+            self.pg_con = get_connection()
+        except Exception as e:
+            raise Exception(
+                f"Failed to connect to PostgreSQL: {e}\n"
+                "Please ensure:\n"
+                "1. PostgreSQL is running\n"
+                "2. Database 'movie_recommendations' exists\n"
+                "3. Connection settings are correct (check environment variables)"
+            )
+        
         self._load_data()
         self._init_or_load_embeddings()
 
     def _load_data(self):
-        basics_path = os.path.join(DATA_DIR, 'title.basics.tsv')
-        crew_path = os.path.join(DATA_DIR, 'title.crew.tsv')
-        principals_path = os.path.join(DATA_DIR, 'title.principals.tsv')
-        names_path = os.path.join(DATA_DIR, 'name.basics.tsv')
-        self.titles = pd.read_csv(basics_path, sep='\t', na_values='\\N',
-                                  usecols=['tconst', 'primaryTitle', 'startYear', 'genres', 'titleType'])
-        self.crew = pd.read_csv(crew_path, sep='\t', na_values='\\N', usecols=['tconst', 'directors'])
-        self.principals = pd.read_csv(principals_path, sep='\t', na_values='\\N', usecols=['tconst', 'nconst', 'category'])
-        self.names = pd.read_csv(names_path, sep='\t', na_values='\\N', usecols=['nconst', 'primaryName'])
-        if 'overview' not in self.titles.columns:
-            self.titles['overview'] = self.titles['primaryTitle']
-        if 'keywords' not in self.titles.columns:
-            self.titles['keywords'] = self.titles['genres']
+        """Load movie data from PostgreSQL instead of CSV files."""
+        print("Loading movie data from PostgreSQL...")
+        
+        # Check if we have movie data in PostgreSQL
+        if not table_exists(self.pg_con, 'movies'):
+            raise Exception(
+                "No movie data found in PostgreSQL!\n"
+                "Please run 'python load_data.py' first to load IMDB data into the database."
+            )
+        
+        movie_count = get_movie_count(self.pg_con)
+        if movie_count == 0:
+            raise Exception(
+                "Movie table exists but is empty!\n"
+                "Please run 'python load_data.py' first to load IMDB data into the database."
+            )
+        
+        print(f"Found {movie_count} movies in database.")
+        
+        # We'll load data when needed for embeddings computation
+        # No need to preload all CSV data since it's now in PostgreSQL
 
     def _save_movie_index(self):
         with open(MOVIE_INDEX_PATH, "wb") as f:
@@ -54,112 +78,131 @@ class MovieRecommender:
             self.movie_index = pickle.load(f)
 
     def _init_or_load_embeddings(self):
-        emb_dim = self._get_embedding_dim()
-        self.sqlite_con = get_con()
-        try:
-            cur = self.sqlite_con.execute("SELECT COUNT(*) FROM movie_embeddings")
-            count = cur.fetchone()[0]
-        except sqlite3.OperationalError:
-            init_sqlite_vec(self.sqlite_con, emb_dim)
-            count = 0
+        # Check if embeddings table exists and has data
+        if not table_exists(self.pg_con, 'movie_embeddings'):
+            raise Exception(
+                "Movie embeddings table not found!\n"
+                "Please run 'python load_embeddings.py' to compute and store embeddings first."
+            )
+        
+        count = get_embedding_count(self.pg_con)
         if count == 0:
-            self._build_features_and_sqlitevec()
-            self._save_movie_index()  # 首次保存
-        else:
-            # 优先用pickle加载
-            try:
-                self._load_movie_index_from_pickle()
-            except Exception:
-                self._load_movie_index_only()
-                self._save_movie_index()
+            raise Exception(
+                "Movie embeddings table exists but is empty!\n"
+                "Please run 'python load_embeddings.py' to compute and store embeddings first."
+            )
+        
+        print(f"Found {count} movie embeddings in database.")
+                
+        # Load movie index for fast lookups
+        try:
+            self._load_movie_index_from_pickle()
+            print("Loaded movie index from cache.")
+        except Exception:
+            print("Loading movie index from database...")
+            self._load_movie_index_from_db()
+            self._save_movie_index()
+        
+        # Initialize transformers for query processing
+        print("Initializing feature transformers...")
+        self._init_transformers()
 
-    def _get_embedding_dim(self):
-        # 预加载部分数据用于确定embedding维度
-        basics_path = os.path.join(DATA_DIR, 'title.basics.tsv')
-        basics = pd.read_csv(basics_path, sep='\t', na_values='\\N', usecols=['tconst', 'primaryTitle', 'startYear', 'genres', 'titleType'])
-        basics = basics[basics['titleType'] == 'movie'].dropna(subset=['genres'])
-        genre_dim = len(set(
-            g for genres in basics['genres'].apply(lambda x: x.split(',')) for g in genres
-        ))
+    def _get_embedding_dim(self, movies_data):
+        """Calculate embedding dimension based on actual movie data."""
+        # Extract all genres from the movies
+        all_genres = set()
+        for movie in movies_data:
+            if movie['genres']:
+                all_genres.update(movie['genres'])
+        
+        genre_dim = len(all_genres)
         # 1 (year) + 32 (director) + 32 (cast) + 200 (text) + genre_dim
         return genre_dim + 1 + 32 + 32 + 200
 
-    def _load_movie_index_only(self):
-        # 只加载movie_index用于id->元数据映射
-        basics_path = os.path.join(DATA_DIR, 'title.basics.tsv')
-        crew_path = os.path.join(DATA_DIR, 'title.crew.tsv')
-        principals_path = os.path.join(DATA_DIR, 'title.principals.tsv')
-        names_path = os.path.join(DATA_DIR, 'name.basics.tsv')
-        titles = pd.read_csv(basics_path, sep='\t', na_values='\\N', usecols=['tconst', 'primaryTitle', 'startYear', 'genres', 'titleType'])
-        crew = pd.read_csv(crew_path, sep='\t', na_values='\\N', usecols=['tconst', 'directors'])
-        principals = pd.read_csv(principals_path, sep='\t', na_values='\\N', usecols=['tconst', 'nconst', 'category'])
-        names = pd.read_csv(names_path, sep='\t', na_values='\\N', usecols=['nconst', 'primaryName'])
-        if 'overview' not in titles.columns:
-            titles['overview'] = titles['primaryTitle']
-        if 'keywords' not in titles.columns:
-            titles['keywords'] = titles['genres']
-        movies = titles[titles['titleType'] == 'movie'].copy()
-        movies = movies.dropna(subset=['genres'])
-        movies['genres'] = movies['genres'].apply(lambda x: x.split(','))
-        movies = movies.merge(crew, on='tconst', how='left')
-        movies['directors'] = movies['directors'].fillna('').apply(lambda x: x.split(',') if isinstance(x, str) else [])
-        principals_actors = principals[principals['category'].isin(['actor', 'actress'])]
-        actors_grouped = principals_actors.groupby('tconst')['nconst'].apply(lambda x: list(x)[:5]).reset_index()
-        movies = movies.merge(actors_grouped, on='tconst', how='left')
-        movies = movies.rename(columns={'nconst': 'cast'})
-        movies['cast'] = movies['cast'].apply(lambda x: x if isinstance(x, list) else [])
-        nconst_to_name = dict(zip(names['nconst'], names['primaryName']))
-        movies['directors'] = movies['directors'].apply(lambda lst: [nconst_to_name.get(n, n) for n in lst if n])
-        movies['cast'] = movies['cast'].apply(lambda lst: [nconst_to_name.get(n, n) for n in lst if n])
-        self.movie_index = movies.reset_index(drop=True)
+    def _load_movie_index_from_db(self):
+        """Load movie index from PostgreSQL database."""
+        movies_data = get_movies_with_details(self.pg_con)
+        
+        # Convert to pandas DataFrame for compatibility
+        movies_list = []
+        for movie in movies_data:
+            movies_list.append({
+                'id': movie['id'],
+                'tconst': movie['tconst'],
+                'primaryTitle': movie['primary_title'],
+                'startYear': movie['start_year'],
+                'genres': movie['genres'],
+                'titleType': movie['title_type'],
+                'overview': movie['overview'] or movie['primary_title'],
+                'keywords': movie['keywords'] or movie['genres'],
+                'directors': movie['directors'],
+                'cast': movie['cast']
+            })
+        
+        self.movie_index = pd.DataFrame(movies_list)
 
-    def _build_features_and_sqlitevec(self):
-        movies = self.titles[self.titles['titleType'] == 'movie'].copy()
-        movies = movies.dropna(subset=['genres'])
-        movies['genres'] = movies['genres'].apply(lambda x: x.split(','))
-        movies = movies.merge(self.crew, on='tconst', how='left')
-        movies['directors'] = movies['directors'].fillna('').apply(lambda x: x.split(',') if isinstance(x, str) else [])
-        principals_actors = self.principals[self.principals['category'].isin(['actor', 'actress'])]
-        actors_grouped = principals_actors.groupby('tconst')['nconst'].apply(lambda x: list(x)[:5]).reset_index()
-        movies = movies.merge(actors_grouped, on='tconst', how='left')
-        movies = movies.rename(columns={'nconst': 'cast'})
-        movies['cast'] = movies['cast'].apply(lambda x: x if isinstance(x, list) else [])
-        nconst_to_name = dict(zip(self.names['nconst'], self.names['primaryName']))
-        movies['directors'] = movies['directors'].apply(lambda lst: [nconst_to_name.get(n, n) for n in lst if n])
-        movies['cast'] = movies['cast'].apply(lambda lst: [nconst_to_name.get(n, n) for n in lst if n])
+    def _init_transformers(self):
+        """Initialize feature transformers needed for query processing."""
+        print("  → Loading movie data for transformer fitting...")
+        movies_data = get_movies_with_details(self.pg_con)
+        
+        if not movies_data:
+            raise Exception("No movie data found for transformer initialization!")
+        
+        # Extract data for fitting transformers
+        genres_list = [movie['genres'] for movie in movies_data]
+        directors_list = [movie['directors'] for movie in movies_data]
+        cast_list = [movie['cast'] for movie in movies_data]
+        years_list = [movie['start_year'] for movie in movies_data]
+        
+        # 1. Fit genre MultiLabelBinarizer
+        print("  → Fitting genre transformer...")
         self.genre_mlb = MultiLabelBinarizer()
-        genre_features = self.genre_mlb.fit_transform(movies['genres'])
-        movies['startYear'] = pd.to_numeric(movies['startYear'], errors='coerce')
-        year_norm = (movies['startYear'] - movies['startYear'].min()) / (movies['startYear'].max() - movies['startYear'].min())
-        year_features = year_norm.fillna(0).values.reshape(-1, 1)
-        text_corpus = (movies['primaryTitle'].fillna('') + ' ' +
-                       movies['overview'].fillna('') + ' ' +
-                       movies['keywords'].fillna('')).tolist()
+        self.genre_mlb.fit(genres_list)
+        
+        # 2. Store year normalization parameters
+        print("  → Computing year normalization parameters...")
+        years_array = np.array([y if y is not None else 0 for y in years_list])
+        self.year_min, self.year_max = years_array.min(), years_array.max()
+        
+        # 3. Fit text feature extractor
+        print("  → Fitting text feature extractor...")
+        text_corpus = []
+        for movie in movies_data:
+            title = movie['primary_title'] or ''
+            overview = movie['overview'] or ''
+            keywords = ' '.join(movie['keywords']) if movie['keywords'] else ''
+            text_corpus.append(f"{title} {overview} {keywords}")
+        
         self.text_features = self.text_extractor.fit_transform(text_corpus)
-        all_directors = set([d for sublist in movies['directors'] for d in sublist])
-        all_cast = set([c for sublist in movies['cast'] for c in sublist])
+        
+        # 4. Build director embeddings dictionary
+        print("  → Building director embeddings...")
+        all_directors = set()
+        for directors in directors_list:
+            if directors:
+                all_directors.update(directors)
         self.director_emb_dict = build_embedding_dict(all_directors, dim=EMBED_DIM)
+        
+        # 5. Build cast embeddings dictionary
+        print("  → Building cast embeddings...")
+        all_cast = set()
+        for cast in cast_list:
+            if cast:
+                all_cast.update(cast)
         self.cast_emb_dict = build_embedding_dict(all_cast, dim=EMBED_DIM)
-        director_embs = np.array([get_mean_embedding(lst, self.director_emb_dict, dim=EMBED_DIM) for lst in movies['directors']])
-        cast_embs = np.array([get_mean_embedding(lst, self.cast_emb_dict, dim=EMBED_DIM) for lst in movies['cast']])
-        self.movie_vectors = np.hstack([
-            genre_features,
-            year_features,
-            director_embs,
-            cast_embs,
-            self.text_features
-        ]).astype(np.float32)
-        self.movie_index = movies.reset_index(drop=True)
-        self.sqlite_con = init_sqlite_vec(self.movie_vectors.shape[1])
-        ids = list(range(len(self.movie_index)))
-        insert_embeddings(self.sqlite_con, ids, self.movie_vectors.tolist())
+        
+        print("  → Feature transformers initialized successfully!")
 
     def recommend(self, genres=None, year=None, directors=None, cast=None, keywords=None, overview=None, title=None, top_n=10):
         user_genres = genres if genres else []
         user_genre_vec = self.genre_mlb.transform([user_genres]) if user_genres else np.zeros((1, self.genre_mlb.classes_.shape[0]), dtype=np.float32)
         if year:
             year_val = float(year)
-            year_norm = (year_val - self.movie_index['startYear'].min()) / (self.movie_index['startYear'].max() - self.movie_index['startYear'].min())
+            if self.year_max > self.year_min:
+                year_norm = (year_val - self.year_min) / (self.year_max - self.year_min)
+            else:
+                year_norm = 0.0
             user_year_vec = np.array([[year_norm]], dtype=np.float32)
         else:
             user_year_vec = np.zeros((1, 1), dtype=np.float32)
@@ -185,17 +228,20 @@ class MovieRecommender:
             user_cast_vec,
             user_text_vec
         ]).astype(np.float32)[0]
-        results = sqlite_vec_search(self.sqlite_con, user_vec, top_n=top_n)
+        results = postgresql_vec_search(self.pg_con, user_vec, top_n=top_n)
         out = []
         for movie_id, distance in results:
-            if movie_id < 0 or movie_id >= len(self.movie_index):
-                continue  # 跳过无效索引
-            row = self.movie_index.iloc[movie_id]
+            # movie_id is now the database ID, find corresponding row in movie_index
+            row = self.movie_index[self.movie_index['id'] == movie_id]
+            if row.empty:
+                continue  # Skip if movie not found in index
+            row = row.iloc[0]
+            
             out.append({
                 'title': row['primaryTitle'],
-                'year': int(row['startYear']) if not pd.isna(row['startYear']) else 'N/A',
-                'genres': ','.join(row['genres']),
-                'directors': ','.join(row['directors']),
-                'cast': ','.join(row['cast'])
+                'year': str(int(row['startYear'])) if pd.notna(row['startYear']) else 'N/A',
+                'genres': ','.join(row['genres']) if row['genres'] else 'N/A',
+                'directors': ','.join(row['directors']) if row['directors'] else 'N/A',
+                'cast': ','.join(row['cast']) if row['cast'] else 'N/A'
             })
         return out 

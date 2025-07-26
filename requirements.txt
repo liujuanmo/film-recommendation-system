@@ -1,4 +1,9 @@
 pandas
 numpy
 scikit-learn
-sqlite-vec
+psycopg2-binary
+pgvector
+fastapi
+uvicorn[standard]
+pydantic
+requests
