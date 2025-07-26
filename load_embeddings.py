@@ -1,34 +1,17 @@
-#!/usr/bin/env python3
-"""
-Embeddings Loader for Movie Recommendation System
-
-This script computes movie embeddings from PostgreSQL data and stores them back.
-Run this script after loading movie data with load_data.py.
-
-Usage:
-    python load_embeddings.py [--force]
-
-Options:
-    --force    Force recomputation even if embeddings already exist
-
-Environment Variables:
-    DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
-"""
-
 import argparse
 import sys
+import os
 import numpy as np
 from sklearn.preprocessing import MultiLabelBinarizer
 
-from src.postgresql_vec_client import (
-    get_engine, init_embeddings_table, insert_embeddings, 
+from src.db_client import (
+    get_engine, init_embeddings_table, insert_embeddings, get_session, Movie,
     get_movies_with_details, table_exists, get_embedding_count,
-    store_transformer_metadata, store_person_embeddings, init_postgresql_tables
+    store_transformer_metadata, store_person_embeddings, init_postgresql_tables,
+    init_person_embeddings_table
 )
-from src.feature_engineering import TextFeatureExtractor
-from src.embedding_utils import build_embedding_dict, get_mean_embedding
-
-EMBED_DIM = 32  # Dimension for director and cast embeddings
+from src.feature_engineering import TextFeatureExtractor, build_embedding_dict, get_mean_embedding
+from src.constants import DEFAULT_MODEL, DEFAULT_MODEL_DIMENSION
 
 def check_prerequisites():
     """Check if movie data is loaded in PostgreSQL."""
@@ -38,7 +21,6 @@ def check_prerequisites():
         return False
     
     # Check if we have movies - use SQLAlchemy
-    from src.postgresql_vec_client import get_session, Movie
     session = get_session()
     try:
         movie_count = session.query(Movie).filter(
@@ -71,6 +53,10 @@ def ensure_metadata_tables():
         # This will create all tables including the new metadata tables
         init_postgresql_tables()
         print("✅ Metadata tables verified/created")
+        
+        # Ensure person embeddings table has correct dimensions for sentence transformers
+        init_person_embeddings_table()
+        
     except Exception as e:
         print(f"❌ Error creating metadata tables: {e}")
         raise
@@ -120,8 +106,8 @@ def compute_and_store_embeddings(force=False):
     year_features = year_norm.reshape(-1, 1)
     print(f"     Year range: {year_min} - {year_max}")
     
-    # 3. Text features
-    print("  → Computing text features...")
+    # 3. Text features with Sentence Transformers
+    print(f"  → Computing text features with {DEFAULT_MODEL}...")
     text_corpus = []
     for movie in movies_data:
         title = movie['primary_title'] or ''
@@ -129,37 +115,37 @@ def compute_and_store_embeddings(force=False):
         keywords = ' '.join(movie['keywords']) if movie['keywords'] else ''
         text_corpus.append(f"{title} {overview} {keywords}")
     
-    text_extractor = TextFeatureExtractor(method='tfidf', max_features=200)
+    text_extractor = TextFeatureExtractor(model_name=DEFAULT_MODEL)
     text_features = text_extractor.fit_transform(text_corpus)
-    print(f"     Text feature dimension: {text_features.shape[1]}")
+    print(f"     Text feature dimension: {text_features.shape[1]} (sentence transformer)")
     
-    # 4. Director embeddings
-    print("  → Computing director embeddings...")
+    # 4. Director embeddings with Sentence Transformers
+    print("  → Computing semantic director embeddings...")
     all_directors = set()
     for directors in directors_list:
         if directors:
             all_directors.update(directors)
     
-    director_emb_dict = build_embedding_dict(all_directors, dim=EMBED_DIM)
+    director_emb_dict = build_embedding_dict(all_directors, model_name=DEFAULT_MODEL)
     director_embs = np.array([
-        get_mean_embedding(directors, director_emb_dict, dim=EMBED_DIM) 
+        get_mean_embedding(directors, director_emb_dict) 
         for directors in directors_list
     ])
-    print(f"     Processed {len(all_directors)} unique directors")
+    print(f"     Processed {len(all_directors)} unique directors with semantic embeddings")
     
-    # 5. Cast embeddings
-    print("  → Computing cast embeddings...")
+    # 5. Cast embeddings with Sentence Transformers
+    print("  → Computing semantic cast embeddings...")
     all_cast = set()
     for cast in cast_list:
         if cast:
             all_cast.update(cast)
     
-    cast_emb_dict = build_embedding_dict(all_cast, dim=EMBED_DIM)
+    cast_emb_dict = build_embedding_dict(all_cast, model_name=DEFAULT_MODEL)
     cast_embs = np.array([
-        get_mean_embedding(cast, cast_emb_dict, dim=EMBED_DIM) 
+        get_mean_embedding(cast, cast_emb_dict) 
         for cast in cast_list
     ])
-    print(f"     Processed {len(all_cast)} unique actors")
+    print(f"     Processed {len(all_cast)} unique actors with semantic embeddings")
     
     # 6. Combine all features
     print("  → Combining all features...")
@@ -214,13 +200,23 @@ def compute_and_store_embeddings(force=False):
     })
     print("   ✓ Stored year normalization parameters")
     
-    # Store TF-IDF metadata
-    tfidf_metadata = {
-        'vocabulary': text_extractor.vectorizer.get_feature_names_out().tolist(),
-        'idf_weights': text_extractor.vectorizer.idf_.tolist()
+    # Store text embedding metadata (Sentence Transformer)
+    text_metadata = {
+        'method': 'sentence_transformer',
+        'model_name': DEFAULT_MODEL,
+        'embedding_dim': text_features.shape[1]
     }
-    store_transformer_metadata('tfidf_metadata', tfidf_metadata)
-    print("   ✓ Stored TF-IDF metadata")
+    store_transformer_metadata('text_metadata', text_metadata)
+    print("   ✓ Stored text embedding metadata (sentence transformer)")
+    
+    # Store person embedding metadata
+    person_metadata = {
+        'method': 'sentence_transformer',
+        'model_name': DEFAULT_MODEL,
+        'embedding_dim': director_embs.shape[1]
+    }
+    store_transformer_metadata('person_metadata', person_metadata)
+    print("   ✓ Stored person embedding metadata (sentence transformer)")
     
     # Store person embeddings in database
     store_person_embeddings(director_emb_dict, 'director')

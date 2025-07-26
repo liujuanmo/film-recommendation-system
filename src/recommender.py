@@ -1,10 +1,11 @@
 import numpy as np
-from .postgresql_vec_client import (
+from .db_client import (
     get_engine, search as postgresql_vec_search, get_embedding_count, table_exists,
-    get_movie_count, get_transformer_metadata, get_person_embeddings, get_movie_details_by_ids
+    get_movie_count, get_transformer_metadata, get_movie_details_by_ids
 )
+from .constants import get_text_model
 
-EMBED_DIM = 32
+# Note: Using centralized get_text_model from constants.py for both text and person models
 
 class MovieRecommender:
     def __init__(self):
@@ -80,10 +81,20 @@ class MovieRecommender:
         self.year_min = year_stats['min']
         self.year_max = year_stats['max']
         
-        # Load TF-IDF metadata
-        self.tfidf_metadata = get_transformer_metadata('tfidf_metadata')
-        if not self.tfidf_metadata:
-            raise Exception("TF-IDF metadata not found! Please run 'python load_embeddings.py' first.")
+        # Load text embedding metadata (Sentence Transformer)
+        self.text_metadata = get_transformer_metadata('text_metadata')
+        if not self.text_metadata:
+            raise Exception("Text embedding metadata not found! Please run 'python load_embeddings.py' first.")
+        
+        # Load person embedding metadata  
+        self.person_metadata = get_transformer_metadata('person_metadata')
+        if not self.person_metadata:
+            raise Exception("Person embedding metadata not found! Please run 'python load_embeddings.py' first.")
+        
+        # Initialize sentence transformer model for query processing
+        self.text_model = get_text_model(self.text_metadata['model_name'])
+        self.person_model = get_text_model(self.person_metadata['model_name'])
+        print(f"✓ Loaded sentence transformer models: {self.text_metadata['model_name']}")
         
         print("✓ Loaded transformer metadata from database.")
 
@@ -114,47 +125,25 @@ class MovieRecommender:
         return np.array([year_norm], dtype=np.float32)
 
     def _build_person_vector(self, person_names, person_type):
-        """Build person vector using database lookups."""
+        """Build person vector using sentence transformer."""
         if not person_names:
-            return np.zeros(EMBED_DIM, dtype=np.float32)
+            return np.zeros(self.person_metadata['embedding_dim'], dtype=np.float32)
         
-        # Get embeddings from database
-        embeddings = get_person_embeddings(person_names, person_type)
-        
-        if not embeddings:
-            return np.zeros(EMBED_DIM, dtype=np.float32)
+        # Use sentence transformer to encode person names directly
+        person_texts = [str(name) for name in person_names]
+        embeddings = self.person_model.encode(person_texts)
         
         # Average the embeddings
-        vectors = [np.array(emb) for emb in embeddings.values()]
-        return np.mean(vectors, axis=0).astype(np.float32)
+        return np.mean(embeddings, axis=0).astype(np.float32)
 
     def _build_text_vector(self, text_input):
-        """Build text vector using stored TF-IDF metadata."""
+        """Build text vector using sentence transformer."""
         if not text_input or not text_input.strip():
-            return np.zeros(len(self.tfidf_metadata['vocabulary']), dtype=np.float32)
+            return np.zeros(self.text_metadata['embedding_dim'], dtype=np.float32)
         
-        # Simple TF-IDF transformation using stored vocabulary and IDF
-        words = text_input.lower().split()
-        vocabulary = self.tfidf_metadata['vocabulary']
-        idf_weights = self.tfidf_metadata['idf_weights']
-        
-        # Calculate term frequencies
-        word_counts = {}
-        for word in words:
-            word_counts[word] = word_counts.get(word, 0) + 1
-        
-        # Build TF-IDF vector
-        text_vec = np.zeros(len(vocabulary), dtype=np.float32)
-        total_words = len(words)
-        
-        for word, count in word_counts.items():
-            if word in vocabulary:
-                idx = vocabulary.index(word)
-                tf = count / total_words if total_words > 0 else 0
-                idf = idf_weights[idx]
-                text_vec[idx] = tf * idf
-        
-        return text_vec
+        # Use sentence transformer to encode text directly
+        embedding = self.text_model.encode([text_input])
+        return embedding[0].astype(np.float32)
 
     def recommend(self, genres=None, year=None, directors=None, cast=None, keywords=None, overview=None, title=None, top_n=10):
         """Generate recommendations using database-only operations."""

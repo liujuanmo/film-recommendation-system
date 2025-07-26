@@ -8,6 +8,7 @@ import pandas as pd
 import os
 from typing import List, Tuple, Optional, Dict, Any
 import json
+from .constants import DEFAULT_MODEL_DIMENSION
 
 # Database connection parameters - can be configured via environment variables
 DB_HOST = os.getenv('DB_HOST', 'localhost')
@@ -142,7 +143,7 @@ class PersonEmbedding(Base):
     id = Column(Integer, primary_key=True)
     person_name = Column(String(255), nullable=False, index=True)
     person_type = Column(String(20), nullable=False)  # 'director' or 'actor'
-    embedding = Column(Vector(32))  # Fixed dimension for person embeddings
+    embedding = Column(Vector(DEFAULT_MODEL_DIMENSION))  # 384-dim for sentence transformers (all-MiniLM-L6-v2)
     
     __table_args__ = (
         Index('idx_person_name_type', 'person_name', 'person_type', unique=True),
@@ -207,6 +208,42 @@ def init_embeddings_table(emb_dim: int):
         
     except Exception as e:
         print(f"❌ Error initializing embeddings table: {e}")
+        raise
+
+def init_person_embeddings_table():
+    """Initialize the person embeddings table with correct dimensions for sentence transformers."""
+    try:
+        # Drop existing table to recreate with correct dimensions
+        with engine.connect() as conn:
+            conn.execute(text("DROP TABLE IF EXISTS person_embeddings CASCADE;"))
+            
+            # Create the person_embeddings table with correct dimensions for sentence transformers
+            conn.execute(text(f"""
+                CREATE TABLE person_embeddings (
+                    id SERIAL PRIMARY KEY,
+                    person_name VARCHAR(255) NOT NULL,
+                    person_type VARCHAR(20) NOT NULL,
+                    embedding VECTOR({DEFAULT_MODEL_DIMENSION})
+                );
+            """))
+            
+            # Create indexes
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_person_name_type 
+                ON person_embeddings (person_name, person_type);
+            """))
+            
+            conn.execute(text("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_person_name_type_unique 
+                ON person_embeddings (person_name, person_type);
+            """))
+            
+            conn.commit()
+            
+        print(f"✅ Person embeddings table initialized with {DEFAULT_MODEL_DIMENSION} dimensions")
+        
+    except Exception as e:
+        print(f"❌ Error initializing person embeddings table: {e}")
         raise
 
 def insert_embeddings(ids: List[int], embeddings: List):

@@ -14,7 +14,7 @@ Environment Variables:
 
 import os
 import pandas as pd
-from src.postgresql_vec_client import (
+from db_client import (
     get_engine, init_postgresql_tables, 
     load_movies_data, load_directors_data, load_actors_data,
     load_movie_directors, load_movie_actors,
