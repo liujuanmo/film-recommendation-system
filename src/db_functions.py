@@ -724,33 +724,42 @@ def bulk_insert_actors(actors_df):
 def bulk_insert_movie_directors(movie_directors_data):
     """Bulk insert movie-director relationships, ignoring duplicates."""
     total_inserted = 0
-    data_len = len(movie_directors_data)
 
     with get_session() as session:
-        # Get movie and director IDs
-        movies = session.query(Movie.tconst, Movie.id).all()
+        # Get unique tconsts and nconsts for this data
+        batch_tconsts = set()
+        batch_nconsts = set()
+        for tconst, director_nconst in movie_directors_data:
+            batch_tconsts.add(tconst)
+            batch_nconsts.add(director_nconst)
+
+        # Fetch movie and director IDs
+        movies = (
+            session.query(Movie.tconst, Movie.id)
+            .filter(Movie.tconst.in_(batch_tconsts))
+            .all()
+        )
         movie_ids = {m.tconst: m.id for m in movies}
-        directors = session.query(Director.nconst, Director.id).all()
+        directors = (
+            session.query(Director.nconst, Director.id)
+            .filter(Director.nconst.in_(batch_nconsts))
+            .all()
+        )
         director_ids = {d.nconst: d.id for d in directors}
 
-        batch_size = 5000
+        values = []
+        for tconst, director_nconst in movie_directors_data:
+            movie_id = movie_ids.get(tconst)
+            director_id = director_ids.get(director_nconst)
+            if movie_id and director_id:
+                values.append(
+                    {
+                        "movie_id": movie_id,
+                        "director_id": director_id,
+                    }
+                )
 
-        for i in range(0, len(movie_directors_data), batch_size):
-            batch_data = movie_directors_data[i : i + batch_size]
-            values = []
-            for tconst, director_nconst in batch_data:
-                movie_id = movie_ids.get(tconst)
-                director_id = director_ids.get(director_nconst)
-                if movie_id and director_id:
-                    values.append(
-                        {
-                            "movie_id": movie_id,
-                            "director_id": director_id,
-                        }
-                    )
-            if not values:
-                continue
-
+        if values:
             insert_stmt = (
                 pg_insert(MovieDirector.__table__)
                 .values(values)
@@ -759,9 +768,6 @@ def bulk_insert_movie_directors(movie_directors_data):
             session.execute(insert_stmt)
             session.commit()
             total_inserted += len(values)
-            print(
-                f"✅ Inserted movie-director relationships {total_inserted}/{data_len}, {total_inserted/data_len*100:.0f}%"
-            )
 
     return total_inserted
 
@@ -769,32 +775,42 @@ def bulk_insert_movie_directors(movie_directors_data):
 def bulk_insert_movie_actors(movie_actors_data):
     """Bulk insert movie-actor relationships, ignoring duplicates."""
     total_inserted = 0
-    data_len = len(movie_actors_data)
 
     with get_session() as session:
-        movies = session.query(Movie.tconst, Movie.id).all()
+        # Get unique tconsts and nconsts for this data
+        batch_tconsts = set()
+        batch_nconsts = set()
+        for tconst, actor_nconst in movie_actors_data:
+            batch_tconsts.add(tconst)
+            batch_nconsts.add(actor_nconst)
+
+        # Fetch movie and actor IDs
+        movies = (
+            session.query(Movie.tconst, Movie.id)
+            .filter(Movie.tconst.in_(batch_tconsts))
+            .all()
+        )
         movie_ids = {m.tconst: m.id for m in movies}
-        actors = session.query(Actor.nconst, Actor.id).all()
+        actors = (
+            session.query(Actor.nconst, Actor.id)
+            .filter(Actor.nconst.in_(batch_nconsts))
+            .all()
+        )
         actor_ids = {a.nconst: a.id for a in actors}
 
-        batch_size = 5000
+        values = []
+        for tconst, actor_nconst in movie_actors_data:
+            movie_id = movie_ids.get(tconst)
+            actor_id = actor_ids.get(actor_nconst)
+            if movie_id and actor_id:
+                values.append(
+                    {
+                        "movie_id": movie_id,
+                        "actor_id": actor_id,
+                    }
+                )
 
-        for i in range(0, len(movie_actors_data), batch_size):
-            batch_data = movie_actors_data[i : i + batch_size]
-            values = []
-            for tconst, actor_nconst in batch_data:
-                movie_id = movie_ids.get(tconst)
-                actor_id = actor_ids.get(actor_nconst)
-                if movie_id and actor_id:
-                    values.append(
-                        {
-                            "movie_id": movie_id,
-                            "actor_id": actor_id,
-                        }
-                    )
-            if not values:
-                continue
-
+        if values:
             insert_stmt = (
                 pg_insert(MovieActor.__table__)
                 .values(values)
@@ -803,8 +819,5 @@ def bulk_insert_movie_actors(movie_actors_data):
             session.execute(insert_stmt)
             session.commit()
             total_inserted += len(values)
-            print(
-                f"✅ Inserted movie-actor relationships {total_inserted}/{data_len}, {total_inserted/data_len*100:.0f}%"
-            )
 
     return total_inserted
