@@ -105,51 +105,27 @@ def load_actors(principals, names):
             bulk_insert_movie_actors(movie_actors_data)
 
 
-def main_load_imdb_data():
+if __name__ == "__main__":
     create_tables()
     print("Database tables initialized")
 
-    # run `truncate table movies cascade;` if you want to start fresh
     print("  → Loading movies...")
     movies = load_titles()
+    print("  → Loaded movies")
     bulk_insert_movies(movies)
-    print("  → Loaded movies.")
+    print("  → Inserted all movies")
 
     print("  → Loading names...")
     names = load_names()
     print("  → Loaded names")
+
+    print("  → Loading crews...")
+    crews = load_crews()
+    print("  → Loaded crews")
 
     print("  → Loading directors...")
-    crews = load_crews()
     load_directors(crews, names)
     print("  → Loaded directors")
-
-    print("  → Loading actors...")
-    principals = load_principals()
-    load_actors(principals, names)
-    print("  → Loaded actors")
-
-    print("  → All data loaded.")
-
-
-if __name__ == "__main__":
-    # print("  → Loading movies...")
-    # movies = load_titles()
-    # print("  → Loaded movies")
-    # bulk_insert_movies(movies)
-    # print("  → Inserted all movies")
-
-    print("  → Loading names...")
-    names = load_names()
-    print("  → Loaded names")
-
-    # print("  → Loading crews...")
-    # crews = load_crews()
-    # print("  → Loaded crews")
-
-    # print("  → Loading directors...")
-    # load_directors(crews, names)
-    # print("  → Loaded directors")
 
     print("  → Loading actors...")
     principals = load_principals()
@@ -158,3 +134,5 @@ if __name__ == "__main__":
     print("  → Loading actors...")
     load_actors(principals, names)
     print("  → Loaded actors")
+
+    print("  → All data loaded.")
