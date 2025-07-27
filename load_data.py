@@ -24,55 +24,38 @@ def load_titles():
     return movies
 
 
-def load_crew():
+def load_crews():
     crew_path = os.path.join(DATA_DIR, "title.crew.tsv")
-    return pd.read_csv(
+    crews = pd.read_csv(
         crew_path, sep="\t", na_values="\\N", usecols=["tconst", "directors"]
     )
+    return crews[crews["directors"].notna()].copy()
 
 
 def load_principals():
     principals_path = os.path.join(DATA_DIR, "title.principals.tsv")
-    return pd.read_csv(
+    principals = pd.read_csv(
         principals_path,
         sep="\t",
         na_values="\\N",
         usecols=["tconst", "nconst", "category"],
     )
+    return principals[principals["category"].isin(["actor", "actress"])].copy()
 
 
 def load_names():
     names_path = os.path.join(DATA_DIR, "name.basics.tsv")
-    return pd.read_csv(
+    names = pd.read_csv(
         names_path, sep="\t", na_values="\\N", usecols=["nconst", "primaryName"]
     )
+    return names[names["nconst"].notna()].copy()
 
 
-def load_directors(crew, names):
-    if crew.empty or names.empty:
-        return
-
-    director_nconsts = set()
-    for _, row in crew.iterrows():
-        if pd.notna(row["directors"]) and row["directors"]:
-            directors_list = row["directors"].split(",")
-            director_nconsts.update(directors_list)
-
-    director_names = names[names["nconst"].isin(director_nconsts)].copy()
-    if not director_names.empty:
-        bulk_insert_directors(director_names)
-        movie_directors_data = []
-        for _, row in crew.iterrows():
-            if pd.notna(row["directors"]) and row["directors"]:
-                directors_list = row["directors"].split(",")
-                for director_nconst in directors_list:
-                    if director_nconst.strip():
-                        movie_directors_data.append(
-                            (row["tconst"], director_nconst.strip())
-                        )
-
-        if movie_directors_data:
-            bulk_insert_movie_directors(movie_directors_data)
+def load_directors(movies, crews, names):
+    movies_with_crews = movies.merge(
+        crews[["tconst", "directors"]], on="tconst", how="inner"
+    )
+    directors_expanded = []
 
 
 def load_actors(principals, names):
@@ -116,8 +99,8 @@ def main_load_imdb_data():
     print("  → Loaded names")
 
     print("  → Loading directors...")
-    crew = load_crew()
-    load_directors(crew, names)
+    crews = load_crews()
+    load_directors(movies, crews, names)
     print("  → Loaded directors")
 
     print("  → Loading actors...")
