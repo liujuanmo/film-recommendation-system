@@ -51,11 +51,30 @@ def load_names():
     return names[names["nconst"].notna()].copy()
 
 
-def load_directors(movies, crews, names):
-    movies_with_crews = movies.merge(
-        crews[["tconst", "directors"]], on="tconst", how="inner"
-    )
-    directors_expanded = []
+def load_directors(crews, names):
+    director_nconsts = set()
+    for _, row in crews.iterrows():
+        directors_list = row["directors"].split(",")
+        director_nconsts.update([d.strip() for d in directors_list if d.strip()])
+
+    directors_df = names[names["nconst"].isin(director_nconsts)].copy()
+
+    if not directors_df.empty:
+        bulk_insert_directors(directors_df)
+
+        # Create movie-director relationships
+        movie_directors_data = []
+        for _, row in crews.iterrows():
+            tconst = row["tconst"]
+            directors_list = row["directors"].split(",")
+            for director_nconst in directors_list:
+                director_nconst = director_nconst.strip()
+                if director_nconst:
+                    movie_directors_data.append((tconst, director_nconst))
+
+        # Bulk insert movie-director relationships
+        if movie_directors_data:
+            bulk_insert_movie_directors(movie_directors_data)
 
 
 def load_actors(principals, names):
@@ -100,7 +119,7 @@ def main_load_imdb_data():
 
     print("  → Loading directors...")
     crews = load_crews()
-    load_directors(movies, crews, names)
+    load_directors(crews, names)
     print("  → Loaded directors")
 
     print("  → Loading actors...")
@@ -112,8 +131,20 @@ def main_load_imdb_data():
 
 
 if __name__ == "__main__":
-    print("  → Loading movies...")
-    movies = load_titles()
-    print("  → Loaded movies")
-    bulk_insert_movies(movies)
-    print("  → Inserted all movies")
+    # print("  → Loading movies...")
+    # movies = load_titles()
+    # print("  → Loaded movies")
+    # bulk_insert_movies(movies)
+    # print("  → Inserted all movies")
+
+    print("  → Loading names...")
+    names = load_names()
+    print("  → Loaded names")
+
+    print("  → Loading crews...")
+    crews = load_crews()
+    print("  → Loaded crews")
+
+    print("  → Loading directors...")
+    load_directors(crews, names)
+    print("  → Loaded directors")
