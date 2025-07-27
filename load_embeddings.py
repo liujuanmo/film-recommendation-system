@@ -5,18 +5,15 @@ import numpy as np
 from sklearn.preprocessing import MultiLabelBinarizer
 
 from src.db_functions import (
-    get_engine,
+    enable_pgvector_and_create_tables,
     init_embeddings_table,
     insert_embeddings,
     get_session,
-    Movie,
     get_movies_with_details,
     table_exists,
     get_embedding_count,
     store_transformer_metadata,
     store_person_embeddings,
-    init_postgresql_tables,
-    init_person_embeddings_table,
     stream_movie_features,
     get_year_min_max,
     get_all_unique_genres,
@@ -62,9 +59,8 @@ def compute_text_features(movies_data):
     text_corpus = []
     for movie in movies_data:
         title = movie["primary_title"] or ""
-        overview = movie["overview"] or ""
         keywords = " ".join(movie["keywords"]) if movie["keywords"] else ""
-        text_corpus.append(f"{title} {overview} {keywords}")
+        text_corpus.append(f"{title} {keywords}")
 
     text_extractor = TextFeatureExtractor()
     text_features = text_extractor.fit_transform(text_corpus)
@@ -298,7 +294,7 @@ def compute_and_store_embeddings(batch_size=1000):
 def main():
     print("Loading movie embeddings...")
 
-    init_embeddings_table()
+    enable_pgvector_and_create_tables()
     compute_and_store_embeddings()
 
     print("✅ Embedding loading completed!")

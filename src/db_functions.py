@@ -24,20 +24,17 @@ from .db_models import (
 from .db_connect import get_engine, get_session, get_connection
 
 
-def enable_pgvector_and_create_tables():
-    with get_connection() as conn:
-        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
-        conn.commit()
-
+def create_tables():
     Base.metadata.create_all(bind=get_engine())
 
 
 def init_embeddings_table(emb_dim: int):
-    with get_connection() as conn:
-        conn.execute(text("DROP TABLE IF EXISTS movie_embeddings CASCADE;"))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("DROP TABLE IF EXISTS movie_embeddings CASCADE;")
 
-        conn.execute(
-            text(
+            cursor.execute(
                 f"""
             CREATE TABLE movie_embeddings (
                 movie_id INTEGER PRIMARY KEY REFERENCES movies(id) ON DELETE CASCADE,
@@ -45,23 +42,19 @@ def init_embeddings_table(emb_dim: int):
             );
         """
             )
-        )
 
-        conn.execute(
-            text(
+            cursor.execute(
                 """
             CREATE INDEX IF NOT EXISTS movie_embeddings_embedding_idx 
             ON movie_embeddings USING ivfflat (embedding vector_cosine_ops)
             WITH (lists = 100);
         """
             )
-        )
 
-        conn.execute(text("DROP TABLE IF EXISTS person_embeddings CASCADE;"))
+            cursor.execute("DROP TABLE IF EXISTS person_embeddings CASCADE;")
 
-        # Create the person_embeddings table with correct dimensions for sentence transformers
-        conn.execute(
-            text(
+            # Create the person_embeddings table with correct dimensions for sentence transformers
+            cursor.execute(
                 f"""
             CREATE TABLE person_embeddings (
                 id SERIAL PRIMARY KEY,
@@ -71,28 +64,25 @@ def init_embeddings_table(emb_dim: int):
             );
         """
             )
-        )
 
-        # Create indexes
-        conn.execute(
-            text(
+            # Create indexes
+            cursor.execute(
                 """
             CREATE INDEX IF NOT EXISTS idx_person_name_type 
             ON person_embeddings (person_name, person_type);
         """
             )
-        )
 
-        conn.execute(
-            text(
+            cursor.execute(
                 """
             CREATE UNIQUE INDEX IF NOT EXISTS idx_person_name_type_unique 
             ON person_embeddings (person_name, person_type);
         """
             )
-        )
 
         conn.commit()
+    finally:
+        conn.close()
 
 
 def insert_embeddings(ids: List[int], embeddings: List):
@@ -322,7 +312,6 @@ def insert_movies(movies_df):
                     int(row["startYear"]) if pd.notna(row["startYear"]) else None
                 )
                 existing.genres = genres
-                existing.overview = row.get("overview", "")
             else:
                 # Create new movie
                 movie = Movie(
@@ -332,7 +321,6 @@ def insert_movies(movies_df):
                         int(row["startYear"]) if pd.notna(row["startYear"]) else None
                     ),
                     genres=genres,
-                    overview=row.get("overview", ""),
                 )
                 session.add(movie)
 
@@ -464,7 +452,6 @@ def get_movies_with_details() -> List[Dict[str, Any]]:
             Movie.primary_title,
             Movie.start_year,
             Movie.genres,
-            Movie.overview,
         ).filter(Movie.genres != None)
 
         movies = query.all()
@@ -494,7 +481,6 @@ def get_movies_with_details() -> List[Dict[str, Any]]:
                     "primary_title": movie.primary_title,
                     "start_year": movie.start_year,
                     "genres": movie.genres or [],
-                    "overview": movie.overview,
                     "directors": [d[0] for d in directors],
                     "cast": [a[0] for a in actors],
                 }
@@ -528,7 +514,6 @@ def get_movie_details_by_ids(movie_ids: List[int]) -> List[dict]:
                     "primary_title": movie.primary_title,
                     "start_year": movie.start_year,
                     "genres": movie.genres or [],
-                    "overview": movie.overview,
                     "directors": directors,
                     "cast": actors,
                 }
@@ -626,65 +611,86 @@ def get_all_unique_genres():
 
 
 def bulk_insert_movies(movies_df):
-    """Bulk insert movies data into the database, ignoring duplicates by tconst."""
-    session = get_session()
-    try:
-        # Prepare data for insert
-        values = []
-        for _, row in movies_df.iterrows():
-            genres = row.get("genres", [])
-            if isinstance(genres, str):
-                genres = genres.split(",") if genres else []
-            values.append(
-                {
-                    "tconst": row["tconst"],
-                    "primary_title": row["primaryTitle"],
-                    "start_year": row.get("startYear"),
-                    "genres": genres,
-                    "overview": row.get("overview", row["primaryTitle"]),
-                }
+    total_inserted = 0
+    df_len = len(movies_df)
+    with get_session() as session:
+        batch_size = 5000
+
+        for i in range(0, len(movies_df), batch_size):
+            batch_df = movies_df.iloc[i : i + batch_size]
+            values = []
+            for _, row in batch_df.iterrows():
+                values.append(
+                    {
+                        "tconst": row["tconst"],
+                        "primary_title": row["primaryTitle"],
+                        "start_year": (
+                            int(row.get("startYear"))
+                            if pd.notna(row.get("startYear"))
+                            else 0
+                        ),
+                        "genres": row.get("genres", []),
+                    }
+                )
+            if not values:
+                continue
+
+            insert_stmt = (
+                pg_insert(Movie.__table__)
+                .values(values)
+                .on_conflict_do_nothing(index_elements=["tconst"])
             )
-        if not values:
-            return
-        insert_stmt = (
-            pg_insert(Movie.__table__)
-            .values(values)
-            .on_conflict_do_nothing(index_elements=["tconst"])
-        )
-        session.execute(insert_stmt)
-        session.commit()
-        print(f"✅ Bulk inserted {len(values)} movies (duplicates ignored)")
-    except Exception as e:
-        session.rollback()
-        print(f"❌ Error bulk inserting movies: {e}")
-        raise
-    finally:
-        session.close()
+            session.execute(insert_stmt)
+            session.commit()
+            total_inserted += len(values)
+            print(
+                f"✅ Inserted {total_inserted}/{df_len}, {total_inserted/df_len*100:.0f}%"
+            )
+
+    return total_inserted
 
 
 def bulk_insert_directors(directors_df):
     """Bulk insert directors data into the database, ignoring duplicates by nconst."""
     session = get_session()
     try:
-        values = []
-        for _, row in directors_df.iterrows():
-            values.append(
-                {
-                    "nconst": row["nconst"],
-                    "primary_name": row["primaryName"],
-                }
-            )
+        # Process in smaller batches to avoid SQL query length limits
+        batch_size = 100  # Reduced from 1000
+        total_inserted = 0
 
-        if not values:
-            return
-        insert_stmt = (
-            pg_insert(Director.__table__)
-            .values(values)
-            .on_conflict_do_nothing(index_elements=["nconst"])
+        for i in range(0, len(directors_df), batch_size):
+            batch_df = directors_df.iloc[i : i + batch_size]
+            values = []
+            for _, row in batch_df.iterrows():
+                values.append(
+                    {
+                        "nconst": row["nconst"],
+                        "primary_name": row["primaryName"],
+                    }
+                )
+
+            if not values:
+                continue
+            try:
+                insert_stmt = (
+                    pg_insert(Director.__table__)
+                    .values(values)
+                    .on_conflict_do_nothing(index_elements=["nconst"])
+                )
+                session.execute(insert_stmt)
+                session.commit()
+                total_inserted += len(values)
+                print(
+                    f"✅ Batch {i//batch_size + 1}: Inserted {len(values)} directors (total: {total_inserted})"
+                )
+            except Exception as batch_error:
+                session.rollback()
+                print(f"❌ Error in batch {i//batch_size + 1}: {batch_error}")
+                continue
+
+        print(
+            f"✅ Completed bulk insert: {total_inserted} directors total (duplicates ignored)"
         )
-        session.execute(insert_stmt)
-        session.commit()
-        print(f"✅ Bulk inserted {len(values)} directors (duplicates ignored)")
     except Exception as e:
         session.rollback()
         print(f"❌ Error bulk inserting directors: {e}")
@@ -697,24 +703,42 @@ def bulk_insert_actors(actors_df):
     """Bulk insert actors data into the database, ignoring duplicates by nconst."""
     session = get_session()
     try:
-        values = []
-        for _, row in actors_df.iterrows():
-            values.append(
-                {
-                    "nconst": row["nconst"],
-                    "primary_name": row["primaryName"],
-                }
-            )
-        if not values:
-            return
-        insert_stmt = (
-            pg_insert(Actor.__table__)
-            .values(values)
-            .on_conflict_do_nothing(index_elements=["nconst"])
+        # Process in smaller batches to avoid SQL query length limits
+        batch_size = 100  # Reduced from 1000
+        total_inserted = 0
+
+        for i in range(0, len(actors_df), batch_size):
+            batch_df = actors_df.iloc[i : i + batch_size]
+            values = []
+            for _, row in batch_df.iterrows():
+                values.append(
+                    {
+                        "nconst": row["nconst"],
+                        "primary_name": row["primaryName"],
+                    }
+                )
+            if not values:
+                continue
+            try:
+                insert_stmt = (
+                    pg_insert(Actor.__table__)
+                    .values(values)
+                    .on_conflict_do_nothing(index_elements=["nconst"])
+                )
+                session.execute(insert_stmt)
+                session.commit()
+                total_inserted += len(values)
+                print(
+                    f"✅ Batch {i//batch_size + 1}: Inserted {len(values)} actors (total: {total_inserted})"
+                )
+            except Exception as batch_error:
+                session.rollback()
+                print(f"❌ Error in batch {i//batch_size + 1}: {batch_error}")
+                continue
+
+        print(
+            f"✅ Completed bulk insert: {total_inserted} actors total (duplicates ignored)"
         )
-        session.execute(insert_stmt)
-        session.commit()
-        print(f"✅ Bulk inserted {len(values)} actors (duplicates ignored)")
     except Exception as e:
         session.rollback()
         print(f"❌ Error bulk inserting actors: {e}")
@@ -732,28 +756,45 @@ def bulk_insert_movie_directors(movie_directors_data):
         movie_ids = {m.tconst: m.id for m in movies}
         directors = session.query(Director.nconst, Director.id).all()
         director_ids = {d.nconst: d.id for d in directors}
-        values = []
-        for tconst, director_nconst in movie_directors_data:
-            movie_id = movie_ids.get(tconst)
-            director_id = director_ids.get(director_nconst)
-            if movie_id and director_id:
-                values.append(
-                    {
-                        "movie_id": movie_id,
-                        "director_id": director_id,
-                    }
+
+        # Process in smaller batches to avoid SQL query length limits
+        batch_size = 100  # Reduced from 1000
+        total_inserted = 0
+
+        for i in range(0, len(movie_directors_data), batch_size):
+            batch_data = movie_directors_data[i : i + batch_size]
+            values = []
+            for tconst, director_nconst in batch_data:
+                movie_id = movie_ids.get(tconst)
+                director_id = director_ids.get(director_nconst)
+                if movie_id and director_id:
+                    values.append(
+                        {
+                            "movie_id": movie_id,
+                            "director_id": director_id,
+                        }
+                    )
+            if not values:
+                continue
+            try:
+                insert_stmt = (
+                    pg_insert(MovieDirector.__table__)
+                    .values(values)
+                    .on_conflict_do_nothing(index_elements=["movie_id", "director_id"])
                 )
-        if not values:
-            return
-        insert_stmt = (
-            pg_insert(MovieDirector.__table__)
-            .values(values)
-            .on_conflict_do_nothing(index_elements=["movie_id", "director_id"])
-        )
-        session.execute(insert_stmt)
-        session.commit()
+                session.execute(insert_stmt)
+                session.commit()
+                total_inserted += len(values)
+                print(
+                    f"✅ Batch {i//batch_size + 1}: Inserted {len(values)} movie-director relationships (total: {total_inserted})"
+                )
+            except Exception as batch_error:
+                session.rollback()
+                print(f"❌ Error in batch {i//batch_size + 1}: {batch_error}")
+                continue
+
         print(
-            f"✅ Bulk inserted {len(values)} movie-director relationships (duplicates ignored)"
+            f"✅ Completed bulk insert: {total_inserted} movie-director relationships total (duplicates ignored)"
         )
     except Exception as e:
         session.rollback()
@@ -771,28 +812,45 @@ def bulk_insert_movie_actors(movie_actors_data):
         movie_ids = {m.tconst: m.id for m in movies}
         actors = session.query(Actor.nconst, Actor.id).all()
         actor_ids = {a.nconst: a.id for a in actors}
-        values = []
-        for tconst, actor_nconst in movie_actors_data:
-            movie_id = movie_ids.get(tconst)
-            actor_id = actor_ids.get(actor_nconst)
-            if movie_id and actor_id:
-                values.append(
-                    {
-                        "movie_id": movie_id,
-                        "actor_id": actor_id,
-                    }
+
+        # Process in smaller batches to avoid SQL query length limits
+        batch_size = 100  # Reduced from 1000
+        total_inserted = 0
+
+        for i in range(0, len(movie_actors_data), batch_size):
+            batch_data = movie_actors_data[i : i + batch_size]
+            values = []
+            for tconst, actor_nconst in batch_data:
+                movie_id = movie_ids.get(tconst)
+                actor_id = actor_ids.get(actor_nconst)
+                if movie_id and actor_id:
+                    values.append(
+                        {
+                            "movie_id": movie_id,
+                            "actor_id": actor_id,
+                        }
+                    )
+            if not values:
+                continue
+            try:
+                insert_stmt = (
+                    pg_insert(MovieActor.__table__)
+                    .values(values)
+                    .on_conflict_do_nothing(index_elements=["movie_id", "actor_id"])
                 )
-        if not values:
-            return
-        insert_stmt = (
-            pg_insert(MovieActor.__table__)
-            .values(values)
-            .on_conflict_do_nothing(index_elements=["movie_id", "actor_id"])
-        )
-        session.execute(insert_stmt)
-        session.commit()
+                session.execute(insert_stmt)
+                session.commit()
+                total_inserted += len(values)
+                print(
+                    f"✅ Batch {i//batch_size + 1}: Inserted {len(values)} movie-actor relationships (total: {total_inserted})"
+                )
+            except Exception as batch_error:
+                session.rollback()
+                print(f"❌ Error in batch {i//batch_size + 1}: {batch_error}")
+                continue
+
         print(
-            f"✅ Bulk inserted {len(values)} movie-actor relationships (duplicates ignored)"
+            f"✅ Completed bulk insert: {total_inserted} movie-actor relationships total (duplicates ignored)"
         )
     except Exception as e:
         session.rollback()

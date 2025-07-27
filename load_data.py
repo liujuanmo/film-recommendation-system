@@ -1,8 +1,7 @@
 import os
 import pandas as pd
 from src.db_functions import (
-    enable_pgvector_and_create_tables,
-    get_movie_count,
+    create_tables,
     bulk_insert_movies,
     bulk_insert_directors,
     bulk_insert_actors,
@@ -13,30 +12,20 @@ from src.constants import DATA_DIR
 
 
 def load_titles():
-    basics_path = os.path.join(DATA_DIR, "title.basics.tsv")
-    titles = pd.read_csv(
-        basics_path,
-        sep="\t",
-        na_values="\\N",
-        usecols=["tconst", "primaryTitle", "startYear", "genres", "titleType"],
-    )
-    movies = titles[titles["titleType"] == "movie"].copy()
+    titles_file = os.path.join(DATA_DIR, "title.basics.tsv")
+    movies = pd.read_csv(titles_file, sep="\t", na_values="\\N", low_memory=False)
+
+    movies = movies[movies["titleType"] == "movie"]
     movies = movies.dropna(subset=["genres"])
     movies["genres"] = movies["genres"].apply(
         lambda x: x.split(",") if isinstance(x, str) else []
     )
-    if "overview" not in movies.columns:
-        movies["overview"] = movies["primaryTitle"]
 
     return movies
 
 
 def load_crew():
-    """Load and process title.crew.tsv."""
     crew_path = os.path.join(DATA_DIR, "title.crew.tsv")
-    if not os.path.exists(crew_path):
-        print(f"Warning: {crew_path} not found! Directors will not be available.")
-        return pd.DataFrame(columns=["tconst", "directors"])
     return pd.read_csv(
         crew_path, sep="\t", na_values="\\N", usecols=["tconst", "directors"]
     )
@@ -44,8 +33,6 @@ def load_crew():
 
 def load_principals():
     principals_path = os.path.join(DATA_DIR, "title.principals.tsv")
-    if not os.path.exists(principals_path):
-        return pd.DataFrame(columns=["tconst", "nconst", "category"])
     return pd.read_csv(
         principals_path,
         sep="\t",
@@ -55,10 +42,7 @@ def load_principals():
 
 
 def load_names():
-    """Load and process name.basics.tsv."""
     names_path = os.path.join(DATA_DIR, "name.basics.tsv")
-    if not os.path.exists(names_path):
-        return pd.DataFrame(columns=["nconst", "primaryName"])
     return pd.read_csv(
         names_path, sep="\t", na_values="\\N", usecols=["nconst", "primaryName"]
     )
@@ -118,31 +102,35 @@ def load_actors(principals, names):
 
 
 def main_load_imdb_data():
-    enable_pgvector_and_create_tables()
+    create_tables()
     print("Database tables initialized")
 
-    print("  → Processing movies...")
+    # run `truncate table movies cascade;` if you want to start fresh
+    print("  → Loading movies...")
     movies = load_titles()
     bulk_insert_movies(movies)
-    print("  → Processed movies.")
+    print("  → Loaded movies.")
 
-    print("  → Processing names...")
+    print("  → Loading names...")
     names = load_names()
-    print("  → Processed names")
+    print("  → Loaded names")
 
-    print("  → Processing directors...")
+    print("  → Loading directors...")
     crew = load_crew()
     load_directors(crew, names)
-    print("  → Processed directors")
+    print("  → Loaded directors")
 
-    print("  → Processing actors...")
+    print("  → Loading actors...")
     principals = load_principals()
     load_actors(principals, names)
-    print("  → Processed actors")
+    print("  → Loaded actors")
 
-    final_count = get_movie_count()
-    print(f"  → Completed. Total movies: {final_count}")
+    print("  → All data loaded.")
 
 
 if __name__ == "__main__":
-    main_load_imdb_data()
+    print("  → Loading movies...")
+    movies = load_titles()
+    print("  → Loaded movies")
+    bulk_insert_movies(movies)
+    print("  → Inserted all movies")
