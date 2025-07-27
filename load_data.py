@@ -78,27 +78,29 @@ def load_directors(crews, names):
 
 
 def load_actors(principals, names):
-    if principals.empty or names.empty:
-        return
-    actors_principals = principals[
-        principals["category"].isin(["actor", "actress"])
-    ].copy()
-    actor_nconsts = set(actors_principals["nconst"].dropna())
-    actor_names = names[names["nconst"].isin(actor_nconsts)].copy()
+    # Get all actor nconsts from principals
+    actor_nconsts = set(principals["nconst"].dropna())
 
-    if not actor_names.empty:
-        bulk_insert_actors(actor_names)
+    # Filter names to get only actors
+    actors_df = names[names["nconst"].isin(actor_nconsts)].copy()
+
+    if not actors_df.empty:
+        bulk_insert_actors(actors_df)
+
+        # Create movie-actor relationships (limit to first 5 actors per movie)
         movie_actors_data = []
         actors_grouped = (
-            actors_principals.groupby("tconst")["nconst"]
+            principals.groupby("tconst")["nconst"]
             .apply(lambda x: list(x)[:5])  # Limit to first 5 actors per movie
             .reset_index()
         )
         for _, row in actors_grouped.iterrows():
+            tconst = row["tconst"]
             for actor_nconst in row["nconst"]:
                 if actor_nconst and pd.notna(actor_nconst):
-                    movie_actors_data.append((row["tconst"], actor_nconst))
+                    movie_actors_data.append((tconst, actor_nconst))
 
+        # Bulk insert movie-actor relationships
         if movie_actors_data:
             bulk_insert_movie_actors(movie_actors_data)
 
@@ -141,10 +143,18 @@ if __name__ == "__main__":
     names = load_names()
     print("  → Loaded names")
 
-    print("  → Loading crews...")
-    crews = load_crews()
-    print("  → Loaded crews")
+    # print("  → Loading crews...")
+    # crews = load_crews()
+    # print("  → Loaded crews")
 
-    print("  → Loading directors...")
-    load_directors(crews, names)
-    print("  → Loaded directors")
+    # print("  → Loading directors...")
+    # load_directors(crews, names)
+    # print("  → Loaded directors")
+
+    print("  → Loading actors...")
+    principals = load_principals()
+    print("  → Loaded principals")
+
+    print("  → Loading actors...")
+    load_actors(principals, names)
+    print("  → Loaded actors")
