@@ -9,6 +9,7 @@ from .db_functions import (
 from .constants import get_text_model
 from typing import List, Dict, Optional
 import pandas as pd
+from .db_models import Movie
 
 
 class MovieRecommender:
@@ -371,12 +372,10 @@ class MovieRecommender:
         print(f"✅ Found {len(recommendations)} recommendations")
         return recommendations
 
-    def recommend_similar_to_movie(self, movie_id: str, limit: int = 10) -> List[Dict]:
+    def recommend_similar_to_movie(self, movie: dict, limit: int = 10) -> List[Dict]:
         """Get movie recommendations similar to a specific movie."""
         if not self._is_initialized:
             raise RuntimeError("Recommender not initialized")
-
-        print(f"🔍 Finding movies similar to movie ID: {movie_id}")
 
         try:
             conn = get_connection()
@@ -387,12 +386,12 @@ class MovieRecommender:
                     SELECT embedding FROM movies 
                     WHERE tconst = %s AND embedding IS NOT NULL
                 """,
-                    (movie_id,),
+                    (movie["tconst"],),
                 )
 
                 result = cursor.fetchone()
                 if not result:
-                    print(f"❌ Movie {movie_id} not found or has no embedding")
+                    print(f"❌ Movie {movie['tconst']} not found or has no embedding")
                     return []
 
                 target_embedding = result[0]
@@ -414,7 +413,7 @@ class MovieRecommender:
                     ORDER BY m.embedding <=> %s::vector
                     LIMIT %s
                 """,
-                    (target_embedding, movie_id, target_embedding, limit),
+                    (target_embedding, movie["tconst"], target_embedding, limit),
                 )
 
                 results = cursor.fetchall()

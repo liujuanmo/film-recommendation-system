@@ -132,20 +132,28 @@ async def recommend_by_filters(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/recommend/similar/{movie_id}")
+@app.get("/recommend/similar/{tconst}")
 async def recommend_similar_movies(
-    movie_id: str = Path(..., description="Movie ID (tconst)", example="tt0111161"),
+    tconst: str = Path(..., description="Movie ID (tconst)", example="tt0111161"),
     limit: int = Query(10, description="Number of recommendations", ge=1, le=50),
 ):
     """Get movies similar to a specific movie."""
     try:
-        recommendations = recommender.recommend_similar_to_movie(movie_id, limit=limit)
+        # Get the original movie details
+        movie = recommender.get_movie_details(tconst)
+
+        if not movie:
+            raise HTTPException(status_code=404, detail="Movie not found")
+
+        recommendations = recommender.recommend_similar_to_movie(movie, limit=limit)
 
         return {
-            "movie_id": movie_id,
+            "movie": movie,
             "recommendations": recommendations,
             "total_results": len(recommendations),
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -168,13 +176,13 @@ async def search_movies(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/movie/{movie_id}")
+@app.get("/movie/{tconst}")
 async def get_movie_details(
-    movie_id: str = Path(..., description="Movie ID (tconst)", example="tt0111161"),
+    tconst: str = Path(..., description="Movie ID (tconst)", example="tt0111161"),
 ):
     """Get detailed information about a specific movie."""
     try:
-        movie = recommender.get_movie_details(movie_id)
+        movie = recommender.get_movie_details(tconst)
 
         if not movie:
             raise HTTPException(status_code=404, detail="Movie not found")
