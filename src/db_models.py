@@ -58,87 +58,17 @@ class Movie(Base):
     primary_title = Column(Text, nullable=False)
     start_year = Column(BigInteger, index=True)  # Changed from Integer to BigInteger
     genres = Column(ARRAY(String), index=True)
-    directors = relationship("MovieDirector", back_populates="movie")
-    actors = relationship("MovieActor", back_populates="movie")
-    embedding = relationship("MovieEmbedding", back_populates="movie", uselist=False)
+    directors = Column(ARRAY(String), index=True)
+    actors = Column(ARRAY(String), index=True)
+    embedding = Column(Vector(1181), nullable=False)
 
     __table_args__ = (
         Index("idx_movies_tconst", "tconst"),
         Index("idx_movies_start_year", "start_year"),
         Index("idx_movies_genres", "genres", postgresql_using="gin"),
-    )
-
-
-class Director(Base):
-    __tablename__ = "directors"
-    id = Column(Integer, primary_key=True, index=True)
-    nconst = Column(String(20), unique=True, nullable=False, index=True)
-    primary_name = Column(String(255), nullable=False)
-    movies = relationship("MovieDirector", back_populates="director")
-
-    __table_args__ = (Index("idx_directors_nconst", "nconst"),)
-
-
-class Actor(Base):
-    __tablename__ = "actors"
-    id = Column(Integer, primary_key=True, index=True)
-    nconst = Column(String(20), unique=True, nullable=False, index=True)
-    primary_name = Column(String(255), nullable=False)
-    movies = relationship("MovieActor", back_populates="actor")
-
-    __table_args__ = (Index("idx_actors_nconst", "nconst"),)
-
-
-class MovieDirector(Base):
-    __tablename__ = "movie_directors"
-    id = Column(Integer, primary_key=True, index=True)
-    movie_id = Column(
-        Integer, ForeignKey("movies.id", ondelete="CASCADE"), nullable=False
-    )
-    director_id = Column(
-        Integer, ForeignKey("directors.id", ondelete="CASCADE"), nullable=False
-    )
-    movie = relationship("Movie", back_populates="directors")
-    director = relationship("Director", back_populates="movies")
-
-    __table_args__ = (
-        Index("idx_movie_directors_movie_id", "movie_id"),
-        Index("idx_movie_directors_director_id", "director_id"),
-        Index("idx_movie_directors_unique", "movie_id", "director_id", unique=True),
-    )
-
-
-class MovieActor(Base):
-    __tablename__ = "movie_actors"
-    id = Column(Integer, primary_key=True, index=True)
-    movie_id = Column(
-        Integer, ForeignKey("movies.id", ondelete="CASCADE"), nullable=False
-    )
-    actor_id = Column(
-        Integer, ForeignKey("actors.id", ondelete="CASCADE"), nullable=False
-    )
-    movie = relationship("Movie", back_populates="actors")
-    actor = relationship("Actor", back_populates="movies")
-
-    __table_args__ = (
-        Index("idx_movie_actors_movie_id", "movie_id"),
-        Index("idx_movie_actors_actor_id", "actor_id"),
-        Index("idx_movie_actors_unique", "movie_id", "actor_id", unique=True),
-    )
-
-
-class MovieEmbedding(Base):
-    __tablename__ = "movie_embeddings"
-    movie_id = Column(
-        Integer, ForeignKey("movies.id", ondelete="CASCADE"), primary_key=True
-    )
-    embedding = Column(Vector(DEFAULT_MODEL_DIMENSION), nullable=False)
-    movie = relationship("Movie", back_populates="embedding")
-
-    __table_args__ = (
-        Index(
-            "idx_movie_embeddings_embedding", "embedding", postgresql_using="ivfflat"
-        ),
+        Index("idx_movies_directors", "directors", postgresql_using="gin"),
+        Index("idx_movies_actors", "actors", postgresql_using="gin"),
+        Index("idx_movies_embedding", "embedding", postgresql_using="ivfflat"),
     )
 
 
